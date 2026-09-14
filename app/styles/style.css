@@ -1,0 +1,353 @@
+html {
+  box-sizing: border-box;
+}
+
+*,
+*:after,
+*::before {
+  box-sizing: inherit;
+}
+
+:root {
+  /* Vobiz brand palette — matches vobiz.ai/docs and the Vobiz Console.
+     primary #E83C00 · light #E86A00 · dark #C93400 */
+  --vobiz-primary: #e83c00;
+  --vobiz-light: #e86a00;
+  --vobiz-dark: #c93400;
+  --vobiz-gradient: linear-gradient(135deg, var(--vobiz-light), var(--vobiz-primary));
+  --text: #201c15;
+  --text-dim: #6c6152;
+  --border: #e3ddd0;
+  --surface: #ffffff;
+  --surface-2: #faf8f4;
+  --good-bg: #e7f5ec;
+  --good-text: #1e7a43;
+  --good-border: #bfe6cd;
+  --danger: #b42318;
+  --danger-dark: #912018;
+  --radius: 10px;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-2);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--text);
+}
+
+.main {
+  display: flex;
+  flex-flow: column wrap;
+  align-items: stretch;
+  gap: 14px;
+  width: 300px;
+  margin: 0 auto;
+  padding: 20px 18px 22px;
+}
+
+.main h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.main h3::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--vobiz-gradient);
+  flex: none;
+}
+
+#status {
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  width: fit-content;
+  background: var(--surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+#status.is-ready {
+  background: var(--good-bg);
+  color: var(--good-text);
+  border-color: var(--good-border);
+}
+
+/* Login form */
+#vobiz-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+input,
+select {
+  width: 100%;
+  padding: 9px 11px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input::placeholder {
+  color: #b3aa98;
+}
+
+input:focus,
+select:focus {
+  border-color: var(--vobiz-light);
+  box-shadow: 0 0 0 3px rgba(242, 129, 30, 0.15);
+}
+
+button {
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background: var(--vobiz-gradient);
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.05s ease;
+}
+
+button:hover {
+  opacity: 0.92;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+button:disabled {
+  background: #d9d3c6;
+  color: #8f887a;
+  cursor: not-allowed;
+}
+
+#vobiz-login-btn {
+  align-self: flex-start;
+}
+
+#vobiz-number-select {
+  margin-top: -2px;
+}
+
+#vobiz-login-status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+/* Dial box */
+#dialbox {
+  display: flex;
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+#dialbox input {
+  flex: 1;
+}
+
+#dialbox button {
+  flex: none;
+  padding-left: 18px;
+  padding-right: 18px;
+}
+
+#callnum {
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--vobiz-primary);
+  background: #fdece5;
+  border: 1px solid #f6c7b6;
+  border-radius: 7px;
+}
+
+/* Secondary / icon buttons — for setup and refresh actions, kept visually
+   quieter than the primary orange Call/Log-in buttons */
+.secondary-btn {
+  background: var(--surface);
+  color: var(--vobiz-primary);
+  border: 1px solid var(--border);
+  width: 100%;
+}
+
+.secondary-btn:hover {
+  background: var(--surface-2);
+  opacity: 1;
+}
+
+.icon-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--vobiz-primary);
+  opacity: 1;
+}
+
+#inbound-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#inbound-setup-status {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+#inbound-setup-status.is-ok {
+  color: var(--good-text);
+}
+
+#inbound-setup-status.is-error {
+  color: var(--vobiz-primary);
+}
+
+/* Call history */
+#call-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+}
+
+#call-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+#call-history-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+#call-history-list .info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+#call-history-list .meta {
+  font-size: 12px;
+  color: var(--text);
+}
+
+#call-history-list .play-btn {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+#call-history-list .empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 2px;
+}
+
+#vobiz-playback-audio {
+  display: none;
+  width: 100%;
+  height: 32px;
+}
+
+#vobiz-playback-audio.is-visible {
+  display: block;
+}
+
+/* --- added for the hangup control, field labels and inline hints --- */
+.field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin: 10px 0 3px;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 4px 0 0;
+  min-height: 14px;
+}
+
+.danger-btn {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-left: 6px;
+}
+
+.danger-btn:hover { background: var(--danger-dark); }
+
+button[disabled] { opacity: 0.5; cursor: not-allowed; }

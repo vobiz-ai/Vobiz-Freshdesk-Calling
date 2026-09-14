@@ -1,0 +1,23 @@
+# Freshworks CLI build output and local state
+dist/
+.fdk/
+coverage/
+*.zip
+.report.json
+.usage.json
+digest.md5
+log/
+
+# Dependencies — package-lock.json IS committed, so `npm ci` works in CI
+node_modules/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+node_modules/

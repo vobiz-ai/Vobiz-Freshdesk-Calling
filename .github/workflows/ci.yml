@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the Node version the app declares
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run tests with coverage
+        run: npm test
+
+      - name: Enforce the Marketplace coverage gate
+        run: |
+          node -e '
+            const s = require("./coverage/unit/coverage-summary.json").total;
+            const gate = 80;
+            const metrics = ["lines", "statements", "functions", "branches"];
+            let failed = false;
+            for (const m of metrics) {
+              const pct = s[m].pct;
+              const ok = pct >= gate;
+              console.log(`${ok ? "PASS" : "FAIL"}  ${m.padEnd(11)} ${pct.toFixed(2)}%  (need ${gate}%)`);
+              if (!ok) failed = true;
+            }
+            if (failed) {
+              console.error("\nFreshworks requires at least 80% on every metric for Marketplace submission.");
+              process.exit(1);
+            }
+          '
+
+  validate:
+    name: Freshworks validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+
+      - name: Install the Freshworks CLI
+        run: npm install https://cdn.freshdev.io/fdk/latest-v24.tgz -g
+
+      - name: fdk validate
+        run: fdk validate
+
+  hygiene:
+    name: No secrets or real identifiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan the tree
+        run: |
+          set -e
+          fail=0
+          # Real Vobiz Auth IDs look like MA_ followed by uppercase alphanumerics.
+          # The placeholder MA_XXXXXXXX is allowed.
+          if grep -rEn 'MA_[A-Z0-9]{6,}' --include='*.js' --include='*.json' --include='*.md' --include='*.html' . \
+             | grep -v 'MA_XXXXXXXX' | grep -v node_modules; then
+            echo "::error::A real-looking Vobiz Auth ID is present"; fail=1
+          fi
+          # E.164 numbers outside the documented placeholder/example ranges.
+          if grep -rEn '\+[0-9]{11,15}' --include='*.js' --include='*.html' app/ \
+             | grep -vE '\+919876543210|\+91XXXXXXXXXX'; then
+            echo "::error::A real-looking phone number is present in app/"; fail=1
+          fi
+          if grep -rEn 'trycloudflare|ngrok\.io|onrender\.com' --include='*.js' --include='*.json' --include='*.md' . | grep -v node_modules; then
+            echo "::error::An ephemeral tunnel or hosting URL is present"; fail=1
+          fi
+          exit $fail

@@ -1,0 +1,21 @@
+{
+  "backend_url": {
+    "display_name": "Calling backend URL",
+    "description": "The HTTPS base URL of your Vobiz calling backend, with no trailing slash — for example https://calling.example.com. See docs/backend-contract.md in the repository for what this service must implement.",
+    "type": "text",
+    "required": true
+  },
+  "agent_id": {
+    "display_name": "Agent identity",
+    "description": "Which agent identity this installation registers as. Your calling backend maps this value to a SIP user. Each agent must use a different value, or calls will ring the wrong person.",
+    "type": "text",
+    "required": true
+  },
+  "registrar_url": {
+    "display_name": "SIP registrar URL (optional)",
+    "description": "SIP-over-WebSocket URL of the Vobiz registrar. Leave blank unless Vobiz support has given you a different one.",
+    "type": "text",
+    "required": false,
+    "default_value": "wss://registrar.vobiz.ai:5063/"
+  }
+}

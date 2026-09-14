@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest a capability for the calling panel.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The README's **Known limitations** section lists what is deliberately
+        missing today, including ticket logging, screen pop, transfer, and hold.
+        If your request is already there, a 👍 on an existing issue helps more
+        than a new one.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The workflow you are trying to support, not the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like the panel to do
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Calling (outbound, inbound, transfer, hold)
+        - Freshdesk integration (tickets, contacts, screen pop, logging)
+        - Recordings
+        - Installation and configuration
+        - Documentation
+        - Something else
+    validations:
+      required: true

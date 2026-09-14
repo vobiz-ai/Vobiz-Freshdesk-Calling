@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Vobiz support
+    url: mailto:support@vobiz.ai
+    about: Account, billing, phone numbers, or anything about the Vobiz platform itself.
+  - name: Vobiz documentation
+    url: https://www.vobiz.ai/docs
+    about: API reference, XML reference, and integration guides.
+  - name: Report a security vulnerability
+    url: https://github.com/vobiz-ai/Vobiz-Freshdesk-Calling/security/policy
+    about: Please do not open a public issue for a security problem.

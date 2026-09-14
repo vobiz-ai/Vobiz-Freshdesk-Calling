@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in the calling panel does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: this app needs a calling backend that you run. If calls
+        fail but the panel itself loads, check your backend first — the contract
+        is in [docs/backend-contract.md](../blob/main/docs/backend-contract.md).
+
+        **Never paste an Auth Token, SIP password, or a real customer phone
+        number into a public issue.**
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a ticket in Freshdesk
+        2. Click the Vobiz icon
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: panel-status
+    attributes:
+      label: What the panel's status line said
+      placeholder: e.g. "Registration failed: 401 Unauthorized"
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Which backend were you using
+      options:
+        - The mock backend in this repository
+        - My own backend
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: e.g. Chrome 141 on macOS 15
+    validations:
+      required: true
+  - type: input
+    id: plan
+    attributes:
+      label: Freshdesk plan
+      placeholder: Growth, Pro, or Enterprise
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console output
+      description: Lines beginning `[Vobiz]` are the most useful. Redact anything sensitive.
+      render: text

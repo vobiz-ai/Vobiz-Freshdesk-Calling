@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+
+<html lang="en">
+  <head>
+    <title>Vobiz Calling</title>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script async src="{{{appclient}}}"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jssip@3.10.1/dist/jssip.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="styles/style.css" />
+  </head>
+
+  <body>
+    <div class="main">
+      <h3>Vobiz Calling</h3>
+      <p id="status">Connecting…</p>
+
+      <div id="vobiz-login-form">
+        <label class="field-label" for="vobiz-auth-id">Auth ID</label>
+        <input type="text" id="vobiz-auth-id" placeholder="MA_XXXXXXXX" autocomplete="off" />
+
+        <label class="field-label" for="vobiz-auth-token">Auth Token</label>
+        <input type="password" id="vobiz-auth-token" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+
+        <button id="vobiz-login-btn">Log in</button>
+      </div>
+
+      <label class="field-label" for="vobiz-number-select" id="vobiz-number-label" style="display:none;">Call from</label>
+      <select id="vobiz-number-select" style="display:none;"></select>
+      <p id="vobiz-login-status" style="font-size:12px;">Not logged in — calling is disabled until you log in.</p>
+
+      <div id="dialbox">
+        <label class="field-label" for="dialnumber">Number to call</label>
+        <input type="tel" id="dialnumber" placeholder="+919876543210" />
+        <button id="dialbtn" disabled>Call</button>
+        <button id="hangupbtn" class="danger-btn" style="display:none;">Hang up</button>
+      </div>
+      <p id="dial-hint" class="hint"></p>
+
+      <p id="callnum" style="display:none;"></p>
+      <audio id="vobiz-remote-audio" autoplay></audio>
+
+      <div id="inbound-setup">
+        <button id="setup-inbound-btn" class="secondary-btn">Enable inbound calls to this panel</button>
+        <p id="inbound-setup-status"></p>
+      </div>
+
+      <div id="call-history">
+        <div class="section-title">
+          <span>Call Recordings</span>
+          <button id="refresh-history-btn" class="icon-btn" title="Refresh">⟳</button>
+        </div>
+        <ul id="call-history-list"></ul>
+        <audio id="vobiz-playback-audio" controls></audio>
+      </div>
+    </div>
+
+    <script defer src="scripts/app.js"></script>
+  </body>
+</html>
