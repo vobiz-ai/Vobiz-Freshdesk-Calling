@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { boot, flush, routes, AGENT_OK, SETTINGS } from "./harness.js";
+import { boot, flush, routes, FakeSession, AGENT_OK, SETTINGS } from "./harness.js";
 
 const LOGGED_IN = {
   body: { loggedIn: true, numbers: ["+911140848108", "+911140848109"], from: "+911140848108", authId: "MA_TEST" },
@@ -49,11 +49,27 @@ describe("caller-ID selection", () => {
     expect(t.text("vobiz-login-status")).toMatch(/number not on this account/i);
   });
 
+  it("hides the caller-ID picker when the account has no numbers", async () => {
+    // Covers the empty-list branch: a logged-in account with zero DIDs should
+    // not show an empty dropdown.
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({
+        "/agent/": AGENT_OK,
+        "/session/": { body: { loggedIn: true, numbers: [], from: null, authId: "MA_TEST" } },
+        "/recordings/": RECORDINGS,
+      }),
+    });
+    await flush();
+    expect(t.el("vobiz-number-select").hidden).toBe(true);
+    expect(t.el("vobiz-number-label").hidden).toBe(true);
+  });
+
   it("shows the caller-ID label only once numbers exist", async () => {
     const t = await boot({ iparams: SETTINGS, fetch: base() });
     await flush();
-    expect(t.el("vobiz-number-label").style.display).toBe("block");
-    expect(t.el("vobiz-number-select").style.display).toBe("inline-block");
+    expect(t.el("vobiz-number-label").hidden).toBe(false);
+    expect(t.el("vobiz-number-select").hidden).toBe(false);
   });
 });
 
@@ -231,5 +247,30 @@ describe("the dial button", () => {
     await flush();
     const call = fetch.mock.calls.find(c => String(c[0]).includes("/start-call"));
     expect(JSON.parse(call[1].body).to).toBe("+911140848108");
+  });
+});
+
+describe("defensive guards", () => {
+  it("hanging up with no active session does nothing", async () => {
+    // hangUp() guards on currentRTCSession; clicking it with no call must not throw.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    expect(() => t.el("hangupbtn").click()).not.toThrow();
+  });
+
+  it("survives a hangup that the SIP stack rejects", async () => {
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS }),
+    });
+    await flush();
+    t.ua.emit("registered");
+
+    const session = new FakeSession();
+    session.terminate = () => { throw new Error("already terminated"); };
+    t.ua.emit("newRTCSession", { originator: "remote", session });
+
+    // The error is caught and logged rather than propagating to the click handler.
+    expect(() => t.el("hangupbtn").click()).not.toThrow();
   });
 });

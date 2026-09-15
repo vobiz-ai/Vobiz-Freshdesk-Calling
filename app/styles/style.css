@@ -1,353 +1,624 @@
+/* ===========================================================================
+   Vobiz Calling for Freshdesk
+
+   Reference implementations, followed rather than approximated:
+
+     · vobiz-console/docs/VOBIZ_UI_UX_GUIDELINES.md — the stated single source
+       of truth for cross-product alignment. Satoshi; orange-500 #ea580c for
+       primary actions; blue-grey dark mode, never flat neutral grey.
+     · The Vobiz RTC Playground — the closest sibling surface to this panel.
+       Its language: #0a0a0a ground, zinc neutrals, 10px bold uppercase
+       letterspaced micro-labels, rounded-xl cards, one large orange CTA.
+
+   The panel is ~300px wide in a Freshdesk sidebar, so the playground's three
+   columns collapse to one, but the vocabulary is the same.
+   =========================================================================== */
+
+@import url("https://fonts.cdnfonts.com/css/satoshi");
+
+:root {
+  /* Brand */
+  --orange-500: #ea580c;
+  --orange-600: #c2410c;
+  --orange-soft: rgb(234 88 12 / 0.1);
+  --orange-line: rgb(234 88 12 / 0.28);
+
+  /* Light surfaces */
+  --bg: #ffffff;
+  --card: #ffffff;
+  --sunken: #fafafa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+
+  /* Text */
+  --text: #18181b;
+  --text-2: #52525b;
+  --text-3: #a1a1aa;
+
+  /* Semantic */
+  --ok: #15803d;
+  --ok-soft: rgb(21 128 61 / 0.1);
+  --err: #dc2626;
+  --err-soft: rgb(220 38 38 / 0.1);
+  --busy: #1d4ed8;
+  --busy-soft: rgb(29 78 216 / 0.1);
+
+  --r: 10px;
+  --r-lg: 14px;
+  --ring: 0 0 0 3px rgb(234 88 12 / 0.22);
+}
+
+/* Dark: the playground's ground, with the guidelines' blue-grey elevation. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a0a0a;
+    --card: #141518;
+    --sunken: #0f1011;
+    --border: #27272a;
+    --border-strong: #3f3f46;
+    --text: #fafafa;
+    --text-2: #a1a1aa;
+    --text-3: #71717a;
+    --orange-soft: rgb(234 88 12 / 0.14);
+    --orange-line: rgb(234 88 12 / 0.35);
+    --ok: #4ade80;
+    --ok-soft: rgb(74 222 128 / 0.12);
+    --err: #f87171;
+    --err-soft: rgb(248 113 113 / 0.12);
+    --busy: #93c5fd;
+    --busy-soft: rgb(147 197 253 / 0.12);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --card: #141518;
+  --sunken: #0f1011;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --text: #fafafa;
+  --text-2: #a1a1aa;
+  --text-3: #71717a;
+  --orange-soft: rgb(234 88 12 / 0.14);
+  --orange-line: rgb(234 88 12 / 0.35);
+  --ok: #4ade80;
+  --ok-soft: rgb(74 222 128 / 0.12);
+  --err: #f87171;
+  --err-soft: rgb(248 113 113 / 0.12);
+  --busy: #93c5fd;
+  --busy-soft: rgb(147 197 253 / 0.12);
+}
+
 html {
   box-sizing: border-box;
 }
 
 *,
-*:after,
-*::before {
+*::before,
+*::after {
   box-sizing: inherit;
-}
-
-:root {
-  /* Vobiz brand palette — matches vobiz.ai/docs and the Vobiz Console.
-     primary #E83C00 · light #E86A00 · dark #C93400 */
-  --vobiz-primary: #e83c00;
-  --vobiz-light: #e86a00;
-  --vobiz-dark: #c93400;
-  --vobiz-gradient: linear-gradient(135deg, var(--vobiz-light), var(--vobiz-primary));
-  --text: #201c15;
-  --text-dim: #6c6152;
-  --border: #e3ddd0;
-  --surface: #ffffff;
-  --surface-2: #faf8f4;
-  --good-bg: #e7f5ec;
-  --good-text: #1e7a43;
-  --good-border: #bfe6cd;
-  --danger: #b42318;
-  --danger-dark: #912018;
-  --radius: 10px;
 }
 
 body {
   margin: 0;
-  background: var(--surface-2);
-  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "Satoshi", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* The panel fills its host frame; Freshdesk gives it ~300px. */
+.main {
+  width: 100%;
+  max-width: 340px;
+  margin: 0 auto;
+  padding-bottom: 8px;
+}
+
+/* ---------- header ------------------------------------------------------- */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 10px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.brand-mark {
+  flex: none;
+  display: block;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+/* The wordmark is lowercase and tight, as on vobiz.ai. */
+.brand-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
   color: var(--text);
 }
 
-.main {
-  display: flex;
-  flex-flow: column wrap;
-  align-items: stretch;
-  gap: 14px;
-  width: 300px;
-  margin: 0 auto;
-  padding: 20px 18px 22px;
+/* Playground pattern: 10px bold uppercase, widely letterspaced. */
+.brand-product {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.main h3 {
+/* ---------- status ------------------------------------------------------- */
+
+/* A badge holds a STATE, never a sentence — a sentence here is what made the
+   header overflow its 300px frame. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.status-badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.status-badge.is-ok      { background: var(--ok-soft);     color: var(--ok); }
+.status-badge.is-error   { background: var(--err-soft);    color: var(--err); }
+.status-badge.is-busy    { background: var(--busy-soft);   color: var(--busy); }
+.status-badge.is-pending { background: var(--orange-soft); color: var(--orange-500); }
+
+.status-badge.is-pending::before {
+  animation: vbz-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes vbz-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+/* The sentence gets its own row, where it can wrap and be read. */
+.status-message {
+  margin: 0 14px 12px;
+  padding: 8px 10px;
+  border-radius: var(--r);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.status-message.is-ok      { background: var(--ok-soft);     color: var(--ok); }
+.status-message.is-error   { background: var(--err-soft);    color: var(--err); }
+.status-message.is-busy    { background: var(--busy-soft);   color: var(--busy); }
+.status-message.is-pending { background: var(--orange-soft); color: var(--orange-500); }
+
+/* ---------- steps -------------------------------------------------------- */
+
+.panel {
+  padding: 0 14px;
+}
+
+.step {
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.step:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.step-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text);
+  margin-bottom: 5px;
 }
 
-.main h3::before {
-  content: "";
+.step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
   width: 18px;
   height: 18px;
-  border-radius: 6px;
-  background: var(--vobiz-gradient);
-  flex: none;
+  border-radius: 50%;
+  background: var(--orange-500);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
-#status {
+.step-num-optional {
+  background: none;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-3);
+}
+
+.step-title {
   margin: 0;
-  padding: 6px 12px;
-  border-radius: 20px;
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 600;
-  width: fit-content;
-  background: var(--surface);
-  color: var(--text-dim);
-  border: 1px solid var(--border);
+  letter-spacing: -0.015em;
+  color: var(--text);
 }
 
-#status.is-ready {
-  background: var(--good-bg);
-  color: var(--good-text);
-  border-color: var(--good-border);
+.step-help {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-2);
 }
 
-/* Login form */
-#vobiz-login-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+.step-help a {
+  color: var(--orange-500);
+  text-decoration: none;
+  font-weight: 500;
 }
 
-input,
+.step-help a:hover {
+  text-decoration: underline;
+}
+
+.step-help strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---------- forms -------------------------------------------------------- */
+
+.form-group {
+  margin-bottom: 10px;
+}
+
+/* Playground micro-label. */
+.field-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.input,
+input[type="text"],
+input[type="tel"],
+input[type="password"],
 select {
   width: 100%;
-  padding: 9px 11px;
-  font-size: 13px;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  background: var(--sunken);
   font-family: inherit;
+  font-size: 13px;
   color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-input::placeholder {
-  color: #b3aa98;
+.input::placeholder {
+  color: var(--text-3);
 }
 
+.input:focus,
 input:focus,
 select:focus {
-  border-color: var(--vobiz-light);
-  box-shadow: 0 0 0 3px rgba(242, 129, 30, 0.15);
+  outline: none;
+  border-color: var(--orange-500);
+  box-shadow: var(--ring);
 }
 
-button {
-  padding: 9px 14px;
-  font-size: 13px;
-  font-weight: 600;
+/* Figures are monospaced and tabular so they never reflow. */
+.input-mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.input-dial {
+  height: 46px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.hint:empty {
+  display: none;
+}
+
+/* ---------- buttons ------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
   font-family: inherit;
-  color: #fff;
-  background: var(--vobiz-gradient);
-  border: none;
-  border-radius: 7px;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1;
   cursor: pointer;
-  transition: opacity 0.15s ease, transform 0.05s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
-button:hover {
-  opacity: 0.92;
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
-button:active {
-  transform: scale(0.98);
+.btn-primary {
+  background: var(--orange-500);
+  color: #fff;
 }
 
-button:disabled {
-  background: #d9d3c6;
-  color: #8f887a;
+.btn-primary:hover:not([disabled]) {
+  background: var(--orange-600);
+}
+
+.btn-secondary {
+  background: var(--card);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not([disabled]) {
+  border-color: var(--orange-500);
+  color: var(--orange-500);
+}
+
+.btn-hangup {
+  background: var(--err);
+  color: #fff;
+}
+
+.btn[disabled],
+button[disabled] {
+  opacity: 0.4;
   cursor: not-allowed;
+  pointer-events: none;
 }
 
-#vobiz-login-btn {
-  align-self: flex-start;
-}
-
-#vobiz-number-select {
-  margin-top: -2px;
-}
-
-#vobiz-login-status {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-dim);
-  line-height: 1.4;
-}
-
-/* Dial box */
-#dialbox {
+.actions {
   display: flex;
   gap: 8px;
-  padding: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-#dialbox input {
-  flex: 1;
-}
-
-#dialbox button {
-  flex: none;
-  padding-left: 18px;
-  padding-right: 18px;
-}
-
-#callnum {
-  margin: 0;
-  padding: 9px 12px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--vobiz-primary);
-  background: #fdece5;
-  border: 1px solid #f6c7b6;
-  border-radius: 7px;
-}
-
-/* Secondary / icon buttons — for setup and refresh actions, kept visually
-   quieter than the primary orange Call/Log-in buttons */
-.secondary-btn {
-  background: var(--surface);
-  color: var(--vobiz-primary);
-  border: 1px solid var(--border);
-  width: 100%;
-}
-
-.secondary-btn:hover {
-  background: var(--surface-2);
-  opacity: 1;
 }
 
 .icon-btn {
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  padding: 3px 8px;
-  border-radius: 6px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .icon-btn:hover {
-  background: var(--surface-2);
-  color: var(--vobiz-primary);
-  opacity: 1;
+  background: var(--orange-soft);
+  color: var(--orange-500);
 }
 
-#inbound-setup {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
-#inbound-setup-status {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--text-dim);
-  line-height: 1.4;
+/* ---------- live call ------------------------------------------------------ */
+
+.call-status {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--orange-line);
+  border-radius: var(--r);
+  background: var(--orange-soft);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--orange-500);
 }
 
-#inbound-setup-status.is-ok {
-  color: var(--good-text);
-}
+/* ---------- recordings ------------------------------------------------------ */
 
-#inbound-setup-status.is-error {
-  color: var(--vobiz-primary);
-}
-
-/* Call history */
 #call-history {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  margin: 0 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
 }
 
 .section-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  margin-bottom: 8px;
+  font-size: 9.5px;
   font-weight: 700;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-dim);
+  color: var(--text-3);
 }
 
 #call-history-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 220px;
+  max-height: 160px;
   overflow-y: auto;
 }
 
 #call-history-list li {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 8px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-size: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-2);
 }
 
-#call-history-list .info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+#call-history-list li:last-child {
+  border-bottom: none;
 }
 
-#call-history-list .meta {
-  font-size: 12px;
-  color: var(--text);
-}
-
-#call-history-list .play-btn {
+#call-history-list button {
   flex: none;
-  padding: 5px 10px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--card);
+  font-family: inherit;
   font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
 }
 
-#call-history-list .empty {
-  font-size: 12px;
-  color: var(--text-dim);
-  padding: 4px 2px;
+#call-history-list button:hover {
+  border-color: var(--orange-500);
+  color: var(--orange-500);
 }
 
 #vobiz-playback-audio {
-  display: none;
   width: 100%;
-  height: 32px;
+  margin-top: 10px;
 }
 
-#vobiz-playback-audio.is-visible {
-  display: block;
+audio#vobiz-remote-audio {
+  display: none;
 }
 
-/* --- added for the hangup control, field labels and inline hints --- */
-.field-label {
-  display: block;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-dim);
-  margin: 10px 0 3px;
+/* ---------- FAQ -------------------------------------------------------------- */
+
+.faq {
+  margin: 0 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
 }
 
-.hint {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin: 4px 0 0;
-  min-height: 14px;
-}
-
-.danger-btn {
-  background: var(--danger);
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  padding: 8px 14px;
-  font-size: 13px;
+.faq > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
   cursor: pointer;
-  margin-left: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  transition: color 0.15s ease;
 }
 
-.danger-btn:hover { background: var(--danger-dark); }
+.faq > summary::-webkit-details-marker {
+  display: none;
+}
 
-button[disabled] { opacity: 0.5; cursor: not-allowed; }
+.faq > summary:hover {
+  color: var(--orange-500);
+}
+
+.faq > summary svg {
+  color: var(--orange-500);
+  flex: none;
+}
+
+.faq-item {
+  margin-top: 12px;
+}
+
+.faq-item h3 {
+  margin: 0 0 3px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.faq-item p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+
+/* ---------- misc --------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

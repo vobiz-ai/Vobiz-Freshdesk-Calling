@@ -9,19 +9,19 @@ beforeEach(() => {
 describe("configuration", () => {
   it("refuses to start without both required settings", async () => {
     const t = await boot({ iparams: { backend_url: "https://backend.example.com" } });
-    expect(t.text("status")).toMatch(/not configured/i);
+    expect(t.text("status-message")).toMatch(/not configured/i);
   });
 
   it("rejects a backend URL with no scheme", async () => {
     // A bare hostname resolves against the Freshdesk app origin and 404s
     // silently, which reads as "the backend is down" rather than a typo.
     const t = await boot({ iparams: { backend_url: "backend.example.com", agent_id: "priya" } });
-    expect(t.text("status")).toMatch(/must start with https/i);
+    expect(t.text("status-message")).toMatch(/must start with https/i);
   });
 
   it("rejects a plaintext http backend URL", async () => {
     const t = await boot({ iparams: { backend_url: "http://backend.example.com", agent_id: "priya" } });
-    expect(t.text("status")).toMatch(/must start with https/i);
+    expect(t.text("status-message")).toMatch(/must start with https/i);
   });
 
   it("strips trailing slashes from the backend URL", async () => {
@@ -49,13 +49,32 @@ describe("backend failures are reported, not swallowed", () => {
     // Regression: an unguarded `await fetch` left this as an unhandled
     // rejection and the panel stuck on "Connecting…" forever.
     const t = await boot({ iparams: SETTINGS, fetch: routes({ "/agent/": new Error("ECONNREFUSED") }) });
-    expect(t.text("status")).toMatch(/cannot reach the calling backend/i);
-    expect(t.text("status")).not.toMatch(/connecting/i);
+    expect(t.text("status-message")).toMatch(/cannot reach the calling backend/i);
+    expect(t.text("status-message")).not.toMatch(/connecting/i);
   });
 
   it("reports an unknown agent identity", async () => {
     const t = await boot({ iparams: SETTINGS, fetch: routes({ "/agent/": { ok: false, status: 404 } }) });
-    expect(t.text("status")).toMatch(/could not load the identity/i);
+    expect(t.text("status-message")).toMatch(/could not load the identity/i);
+  });
+});
+
+describe("status is a short state plus a separate message", () => {
+  it("keeps the header badge short even when the message is a sentence", async () => {
+    // Regression: the badge had white-space:nowrap and was fed 70-character
+    // sentences, which overflowed the 300px panel.
+    const t = await boot({ iparams: { backend_url: "backend.example.com", agent_id: "priya" } });
+    expect(t.text("status")).toBe("Offline");
+    expect(t.text("status").length).toBeLessThan(16);
+    expect(t.text("status-message")).toMatch(/must start with https/i);
+  });
+
+  it("tones the badge by state", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: routes({ "/agent/": AGENT_OK }) });
+    t.ua.emit("registered");
+    expect(t.el("status").className).toContain("is-ok");
+    t.ua.emit("disconnected");
+    expect(t.el("status").className).toContain("is-pending");
   });
 });
 
@@ -121,13 +140,13 @@ describe("calling is gated on BOTH login and SIP registration", () => {
 
     t.ua.emit("disconnected");
     expect(t.isDisabled("dialbtn")).toBe(true);
-    expect(t.text("status")).toMatch(/disconnected/i);
+    expect(t.text("status-message")).toMatch(/disconnected/i);
   });
 
   it("reports a failed registration", async () => {
     const t = await boot({ iparams: SETTINGS, fetch: fetchOk() });
     t.ua.emit("registrationFailed", { cause: "401 Unauthorized" });
-    expect(t.text("status")).toMatch(/registration failed.*401/i);
+    expect(t.text("status-message")).toMatch(/registration failed.*401/i);
     expect(t.isDisabled("dialbtn")).toBe(true);
   });
 });
@@ -274,7 +293,7 @@ describe("an inbound leg", () => {
   it("is answered, and exposes a way to end it", async () => {
     const { t, session } = await ringIn();
     expect(session.answered).toBe(true);
-    expect(t.el("hangupbtn").style.display).toBe("inline-block");
+    expect(t.el("hangupbtn").hidden).toBe(false);
   });
 
   it("hangs up when asked", async () => {
@@ -288,7 +307,7 @@ describe("an inbound leg", () => {
   it("hides the hangup control once the call ends", async () => {
     const { t, session } = await ringIn();
     session.emit("ended");
-    expect(t.el("hangupbtn").style.display).toBe("none");
+    expect(t.el("hangupbtn").hidden).toBe(true);
   });
 
   it("binds audio through the peerconnection event, not session.connection", async () => {

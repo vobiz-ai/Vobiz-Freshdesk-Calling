@@ -91,10 +91,10 @@ function renderNumberOptions(numbers, selected) {
     if (n === selected) opt.selected = true;
     select.appendChild(opt);
   });
-  const show = (numbers || []).length ? "inline-block" : "none";
-  select.style.display = show;
+  const hasNumbers = (numbers || []).length > 0;
+  select.hidden = !hasNumbers;
   const label = document.getElementById("vobiz-number-label");
-  if (label) label.style.display = (numbers || []).length ? "block" : "none";
+  if (label) label.hidden = !hasNumbers;
 }
 
 function setDialEnabled(enabled) {
@@ -133,7 +133,7 @@ function hangUp() {
 
 function setHangupVisible(visible) {
   const btn = document.getElementById("hangupbtn");
-  if (btn) btn.style.display = visible ? "inline-block" : "none";
+  if (btn) btn.hidden = !visible;
 }
 
 async function restoreVobizSession() {
@@ -293,15 +293,51 @@ function playRecording(recordingId) {
   const audioEl = document.getElementById("vobiz-playback-audio");
   if (!audioEl) return;
   audioEl.src = `${BACKEND_URL}/recording-audio/${encodeURIComponent(AGENT_ID)}/${encodeURIComponent(recordingId)}`;
+  // The element is hidden until there is something to play; an empty native
+  // player renders as a bright browser-chrome blob.
+  audioEl.hidden = false;
   audioEl.classList.add("is-visible");
   audioEl.play().catch(err => console.warn("[Vobiz] recording playback blocked:", err));
 }
 
+/**
+ * Status is two things, not one.
+ *
+ * The header carries a short STATE ("Ready", "Offline", "On a call") — that is
+ * what a badge is for. The full sentence, which can run to seventy characters,
+ * goes in a message row beneath it where there is room to read it.
+ *
+ * Cramming a sentence into a nowrap pill is what made the header overflow.
+ */
+function statusState(text) {
+  if (/^ready/i.test(text)) return { label: "Ready", tone: "ok" };
+  if (/^on a call/i.test(text)) return { label: "On a call", tone: "busy" };
+  if (/^call ringing/i.test(text)) return { label: "Ringing", tone: "busy" };
+  if (/^connecting/i.test(text)) return { label: "Connecting", tone: "pending" };
+  if (/reconnecting/i.test(text)) return { label: "Reconnecting", tone: "pending" };
+  if (/^not configured|must start with|cannot reach|could not load|registration failed/i.test(text)) {
+    return { label: "Offline", tone: "error" };
+  }
+  return { label: "Offline", tone: "error" };
+}
+
 function setStatus(text) {
   const el = document.getElementById("status");
-  if (!el) return;
-  el.textContent = text;
-  el.classList.toggle("is-ready", /^ready/i.test(text));
+  const msg = document.getElementById("status-message");
+  const { label, tone } = statusState(text);
+
+  if (el) {
+    el.textContent = label;
+    el.className = `status-badge is-${tone}`;
+  }
+
+  if (msg) {
+    // Only show the sentence when it says more than the badge already does.
+    const redundant = label.toLowerCase() === text.trim().toLowerCase();
+    msg.textContent = redundant ? "" : text;
+    msg.hidden = redundant;
+    msg.className = `status-message is-${tone}`;
+  }
 }
 
 // For an INCOMING session JsSIP has not built the RTCPeerConnection yet —
@@ -419,7 +455,7 @@ async function placeCall(number) {
   const numEl = document.getElementById("callnum");
   if (numEl) {
     numEl.textContent = `Calling ${number}…`;
-    numEl.style.display = "block";
+    numEl.hidden = false;
   }
 
   let result;
@@ -477,7 +513,7 @@ function watchCallStatus(callUuid, number, numEl) {
         clearInterval(timer);
         if (statusTimer === timer) statusTimer = null;
         numEl.textContent = "Call ended";
-        setTimeout(() => { numEl.style.display = "none"; }, 4000);
+        setTimeout(() => { numEl.hidden = true; }, 4000);
         // Vobiz writes the CDR a few seconds after the call actually ends,
         // so refresh a beat later rather than immediately (an instant
         // refresh would just miss this call and look like nothing happened).

@@ -13,47 +13,191 @@
 
   <body>
     <div class="main">
-      <h3>Vobiz Calling</h3>
-      <p id="status">Connecting…</p>
+      <header class="app-header">
+        <div class="brand">
+          <!-- The Vobiz logomark, from vobiz.ai/logo.svg. -->
+          <svg class="brand-mark" width="28" height="20" viewBox="0 0 42 30" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+            <path d="M42 14.7458V0C24.5641 0 12 13.7288 12 30H27.1282C27.1282 21.3559 33.5385 14.7458 42 14.7458Z" fill="#E83C00"/>
+            <path d="M0 15V0C9.28572 0 15 6.42857 15 15H0Z" fill="#E86A00"/>
+          </svg>
+          <div class="brand-text">
+            <span class="brand-name">vobiz</span>
+            <span class="brand-product">Calling for Freshdesk</span>
+          </div>
+        </div>
+        <span id="status" class="status-badge is-pending">Connecting</span>
+      </header>
 
-      <div id="vobiz-login-form">
-        <label class="field-label" for="vobiz-auth-id">Auth ID</label>
-        <input type="text" id="vobiz-auth-id" placeholder="MA_XXXXXXXX" autocomplete="off" />
+      <!-- The full status sentence. Too long for the header badge, so it lives
+           here where there is room to wrap and actually be read. -->
+      <p id="status-message" class="status-message is-pending">Connecting…</p>
 
-        <label class="field-label" for="vobiz-auth-token">Auth Token</label>
-        <input type="password" id="vobiz-auth-token" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+      <div class="panel">
+        <!-- Step 1 — sign in -->
+        <section class="step">
+          <div class="step-head">
+            <span class="step-num">1</span>
+            <h2 class="step-title">Sign in to Vobiz</h2>
+          </div>
+          <p class="step-help">
+            Your Auth ID and Auth Token are on the
+            <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
+            under <strong>API credentials</strong>. The Auth Token is not your login password.
+          </p>
 
-        <button id="vobiz-login-btn">Log in</button>
-      </div>
+          <div id="vobiz-login-form">
+            <div class="form-group">
+              <label class="field-label" for="vobiz-auth-id">Auth ID</label>
+              <input type="text" id="vobiz-auth-id" class="input input-mono" placeholder="MA_XXXXXXXX" autocomplete="off" />
+            </div>
 
-      <label class="field-label" for="vobiz-number-select" id="vobiz-number-label" style="display:none;">Call from</label>
-      <select id="vobiz-number-select" style="display:none;"></select>
-      <p id="vobiz-login-status" style="font-size:12px;">Not logged in — calling is disabled until you log in.</p>
+            <div class="form-group">
+              <label class="field-label" for="vobiz-auth-token">Auth Token</label>
+              <input type="password" id="vobiz-auth-token" class="input" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+            </div>
 
-      <div id="dialbox">
-        <label class="field-label" for="dialnumber">Number to call</label>
-        <input type="tel" id="dialnumber" placeholder="+919876543210" />
-        <button id="dialbtn" disabled>Call</button>
-        <button id="hangupbtn" class="danger-btn" style="display:none;">Hang up</button>
-      </div>
-      <p id="dial-hint" class="hint"></p>
+            <button id="vobiz-login-btn" class="btn btn-primary">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                <path d="m10 17 5-5-5-5M15 12H3"/>
+              </svg>
+              Log in
+            </button>
+          </div>
 
-      <p id="callnum" style="display:none;"></p>
-      <audio id="vobiz-remote-audio" autoplay></audio>
+          <p id="vobiz-login-status" class="hint">Not signed in.</p>
+        </section>
 
-      <div id="inbound-setup">
-        <button id="setup-inbound-btn" class="secondary-btn">Enable inbound calls to this panel</button>
-        <p id="inbound-setup-status"></p>
+        <!-- Step 2 — caller ID -->
+        <section class="step">
+          <div class="step-head">
+            <span class="step-num">2</span>
+            <h2 class="step-title">Choose a caller ID</h2>
+          </div>
+          <p class="step-help">
+            The Vobiz number your calls go out from. Carriers require a real
+            number here to bridge a call to a mobile or landline.
+          </p>
+          <div class="form-group">
+            <label class="field-label" for="vobiz-number-select" id="vobiz-number-label" hidden>Calling from</label>
+            <select id="vobiz-number-select" hidden class="input"></select>
+          </div>
+        </section>
+
+        <!-- Step 3 — dial -->
+        <section class="step">
+          <div class="step-head">
+            <span class="step-num">3</span>
+            <h2 class="step-title">Place a call</h2>
+          </div>
+          <p class="step-help">
+            Type a number in E.164 format, or click any phone number in
+            Freshdesk and this panel dials it for you.
+          </p>
+
+          <div id="dialbox">
+            <div class="form-group">
+              <label class="field-label" for="dialnumber">Number to call</label>
+              <input type="tel" id="dialnumber" class="input input-mono input-dial" placeholder="+91 98765 43210" />
+            </div>
+            <div class="actions">
+              <button id="dialbtn" class="btn btn-primary" disabled>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>
+                </svg>
+                Call
+              </button>
+              <button id="hangupbtn" hidden class="btn btn-hangup">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67"/>
+                  <path d="M5 5l14 14"/>
+                </svg>
+                Hang up
+              </button>
+            </div>
+          </div>
+          <p id="dial-hint" class="hint"></p>
+          <p id="callnum" hidden class="call-status"></p>
+        </section>
+
+        <audio id="vobiz-remote-audio" autoplay></audio>
+
+        <!-- Optional — inbound -->
+        <section class="step step-optional">
+          <div class="step-head">
+            <span class="step-num step-num-optional">+</span>
+            <h2 class="step-title">Receive calls here</h2>
+          </div>
+          <p class="step-help">
+            One-time setup. Points your selected Vobiz number at this panel so
+            inbound calls ring in the browser.
+          </p>
+          <button id="setup-inbound-btn" class="btn btn-secondary">Enable inbound calls</button>
+          <p id="inbound-setup-status" class="hint"></p>
+        </section>
       </div>
 
       <div id="call-history">
         <div class="section-title">
-          <span>Call Recordings</span>
-          <button id="refresh-history-btn" class="icon-btn" title="Refresh">⟳</button>
+          <span>Call recordings</span>
+          <button id="refresh-history-btn" class="icon-btn" title="Refresh" aria-label="Refresh recordings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+              <path d="M8 16H3v5"/>
+            </svg>
+          </button>
         </div>
         <ul id="call-history-list"></ul>
-        <audio id="vobiz-playback-audio" controls></audio>
+        <audio id="vobiz-playback-audio" controls hidden></audio>
       </div>
+
+      <!-- Explanation, kept at the bottom so it never gets in the way. -->
+      <details class="faq">
+        <summary>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/>
+          </svg>
+          Frequently asked
+        </summary>
+
+        <div class="faq-item">
+          <h3>Why does the person I call hear ringing after answering?</h3>
+          <p>
+            Vobiz dials the customer first, then bridges your browser in. Those
+            few seconds of ringback are that second leg connecting. It is
+            expected, and the call order cannot be reversed.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Why is the Call button disabled?</h3>
+          <p>
+            Calling needs both a signed-in account and a live SIP registration.
+            The hint under the button says which one is missing. Dialling
+            without registration would connect the customer to silence.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Do I need a headset?</h3>
+          <p>
+            Audio runs through your computer's microphone and speakers. Your
+            browser asks for microphone permission on the first call — allow it,
+            or the other side hears nothing.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Where do recordings go?</h3>
+          <p>
+            Vobiz records the call and this panel lists recent ones above.
+            Playback is proxied through your calling backend, because recording
+            files need authentication a plain audio tag cannot send.
+          </p>
+        </div>
+      </details>
     </div>
 
     <script defer src="scripts/app.js"></script>
