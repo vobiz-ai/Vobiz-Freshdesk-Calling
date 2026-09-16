@@ -155,19 +155,14 @@ describe("call recordings", () => {
   });
 });
 
-describe("call progress polling", () => {
+describe("call progress", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  async function dial(statusSequence) {
-    let i = 0;
-    const fetch = routes({
-      "/agent/": AGENT_OK,
-      "/session/": LOGGED_IN,
-      "/recordings/": RECORDINGS,
-      "/start-call": { body: { request_uuid: "uuid-1" } },
-      "/call-status/": () => ({ body: { active: statusSequence[Math.min(i++, statusSequence.length - 1)] } }),
-    });
+  // The browser is the A leg: it sends the INVITE itself, so progress comes
+  // from the JsSIP session rather than from polling the backend.
+  async function dial() {
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS });
     const t = await boot({ iparams: SETTINGS, fetch });
     await vi.advanceTimersByTimeAsync(0);
     t.ua.emit("registered");
@@ -175,53 +170,46 @@ describe("call progress polling", () => {
     t.el("dialnumber").value = "+911140848108";
     t.el("dialbtn").click();
     await vi.advanceTimersByTimeAsync(0);
-    return t;
+    return { t, session: t.ua.calls.at(-1).session };
   }
 
-  it("reports a live call, then its end", async () => {
-    const t = await dial([true, true, false]);
+  it("dials the registrar with the typed number", async () => {
+    const { t } = await dial();
+    expect(t.ua.calls).toHaveLength(1);
+    expect(t.ua.calls[0].target).toBe("sip:+911140848108@registrar.vobiz.ai");
+    expect(t.ua.calls[0].options.mediaConstraints).toEqual({ audio: true, video: false });
+  });
 
-    await vi.advanceTimersByTimeAsync(3000);
+  it("reports ringing, then connected, then the end", async () => {
+    const { t, session } = await dial();
+
+    session.emit("progress");
+    expect(t.text("callnum")).toMatch(/ringing \+911140848108/i);
+
+    session.emit("confirmed");
     expect(t.text("callnum")).toMatch(/on a call with \+911140848108/i);
 
-    await vi.advanceTimersByTimeAsync(6000);
+    session.emit("ended");
     expect(t.text("callnum")).toMatch(/call ended/i);
   });
 
-  it("stops polling once the call has ended", async () => {
-    const t = await dial([true, false]);
-    await vi.advanceTimersByTimeAsync(9000);
-    expect(t.text("callnum")).toMatch(/call ended/i);
-
-    const el = t.el("callnum");
-    el.textContent = "sentinel";
-    await vi.advanceTimersByTimeAsync(30000);
-    // The timer is cleared, so nothing overwrites the sentinel.
-    expect(el.textContent).toBe("sentinel");
+  it("reports a failure cause", async () => {
+    const { t, session } = await dial();
+    session.emit("failed", { cause: "Busy" });
+    expect(t.text("callnum")).toMatch(/call failed — busy/i);
   });
 
-  it("survives a failed poll without stopping", async () => {
-    let n = 0;
-    const fetch = routes({
-      "/agent/": AGENT_OK,
-      "/session/": LOGGED_IN,
-      "/recordings/": RECORDINGS,
-      "/start-call": { body: { request_uuid: "uuid-1" } },
-      "/call-status/": () => {
-        n += 1;
-        if (n === 1) return new Error("transient");
-        return { body: { active: true } };
-      },
-    });
+  it("keeps the Call button disabled until SIP is registered", async () => {
+    // The first line of defence against dialling with nowhere to put the audio.
+    // The in-placeCall guard behind it is covered in app.test.js, which reaches
+    // placeCall through cti.triggerDialer rather than the button.
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS });
     const t = await boot({ iparams: SETTINGS, fetch });
     await vi.advanceTimersByTimeAsync(0);
-    t.ua.emit("registered");
-    t.el("dialnumber").value = "+911140848108";
-    t.el("dialbtn").click();
-    await vi.advanceTimersByTimeAsync(0);
 
-    await vi.advanceTimersByTimeAsync(6000);
-    expect(t.text("callnum")).toMatch(/on a call/i);
+    expect(t.el("dialbtn").disabled).toBe(true);
+    t.ua.emit("registered");
+    expect(t.el("dialbtn").disabled).toBe(false);
   });
 });
 
@@ -238,15 +226,13 @@ describe("the dial button", () => {
   });
 
   it("trims the number before dialling", async () => {
-    const fetch = base({ "/start-call": { body: { request_uuid: "u" } } });
-    const t = await boot({ iparams: SETTINGS, fetch });
+    const t = await boot({ iparams: SETTINGS, fetch: base({}) });
     await flush();
     t.ua.emit("registered");
     t.el("dialnumber").value = "  +911140848108  ";
     t.el("dialbtn").click();
     await flush();
-    const call = fetch.mock.calls.find(c => String(c[0]).includes("/start-call"));
-    expect(JSON.parse(call[1].body).to).toBe("+911140848108");
+    expect(t.ua.calls.at(-1).target).toBe("sip:+911140848108@registrar.vobiz.ai");
   });
 });
 

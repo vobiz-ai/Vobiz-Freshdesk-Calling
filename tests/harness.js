@@ -22,6 +22,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INDEX_HTML = fs.readFileSync(path.join(root, "app/index.html"), "utf8");
 const APP_PATH = "../app/scripts/app.js";
 
+// jsdom ships no navigator.mediaDevices, but every browser the panel runs in
+// has one. Without this the app's "is there a microphone path at all" guard
+// trips and the inbound leg is never answered — a property of the test
+// environment, not of the code under test.
+if (!globalThis.navigator.mediaDevices) {
+  Object.defineProperty(globalThis.navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [] })) },
+  });
+}
+
 /** The <body> of the real panel, so tests bind to the real element ids. */
 function bodyMarkup() {
   const m = INDEX_HTML.match(/<body>([\s\S]*?)<\/body>/i);
@@ -36,11 +47,21 @@ class FakeUA {
     this.handlers = {};
     this.started = false;
     this.stopped = false;
+    this.calls = [];
   }
   on(event, cb) { (this.handlers[event] ||= []).push(cb); }
   start() { this.started = true; }
   stop() { this.stopped = true; }
   emit(event, payload) { (this.handlers[event] || []).forEach(cb => cb(payload)); }
+  /**
+   * Mirrors JsSIP's ua.call(target, options): records what was dialled and
+   * hands back a session the test can drive through progress/confirmed/ended.
+   */
+  call(target, options) {
+    const session = new FakeSession();
+    this.calls.push({ target, options, session });
+    return session;
+  }
 }
 
 /** A stand-in for an inbound JsSIP RTC session. */

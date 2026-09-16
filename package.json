@@ -8,7 +8,9 @@
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "mock-backend": "node mock-backend/server.js",
-    "fdk-unit-test": "vitest run --coverage"
+    "fdk-unit-test": "vitest run --coverage",
+    "pack": "./tools/pack.sh",
+    "dev": "fdk run --skip-validation lint"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^2.1.8",
