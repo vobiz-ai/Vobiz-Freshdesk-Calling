@@ -481,7 +481,14 @@ async function initVobizSip() {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("navigator.mediaDevices is unavailable — this frame is not a secure context");
       }
-      currentRTCSession.answer({ mediaConstraints: { audio: true, video: false } });
+      // pcConfig matters here exactly as much as it does on an outbound call:
+      // without STUN the answer carries host-only candidates and the leg is torn
+      // down without connecting, leaving a B leg billed 0s and no explanation.
+      currentRTCSession.answer({
+        mediaConstraints: { audio: true, video: false },
+        pcConfig: { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] },
+        sessionTimersExpires: 300,
+      });
     } catch (err) {
       console.error("[Vobiz] could not answer the incoming leg:", err);
       setStatus(`Could not answer — ${err.name === "NotAllowedError"
