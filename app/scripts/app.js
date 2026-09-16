@@ -217,7 +217,9 @@ async function setupInboundCalling() {
     const res = await fetch(`${BACKEND_URL}/setup-inbound`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agentId: AGENT_ID }),
+      // Declaring the platform matters: this panel is browser-only, so the
+      // backend must not also ring the agent's mobile on an inbound call.
+      body: JSON.stringify({ agentId: AGENT_ID, platform: "freshdesk" }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `setup failed (${res.status})`);
