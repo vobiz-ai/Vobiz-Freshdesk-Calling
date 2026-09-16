@@ -21,3 +21,6 @@ node_modules/
 .idea/
 .vscode/
 node_modules/
+
+# Build copy made by tools/pack.sh
+build/

@@ -26,7 +26,22 @@ let currentRTCSession = null;
 // which rings the customer and then connects them to silence.
 let accountReady = false;
 let sipRegistered = false;
-let statusTimer = null;
+
+/**
+ * Every backend call goes through here.
+ *
+ * ngrok's free tier serves a browser interstitial (ERR_NGROK_6024) to anything
+ * with a browser User-Agent, which means a plain fetch() from this panel gets an
+ * HTML warning page instead of JSON. The `ngrok-skip-browser-warning` header
+ * suppresses it. It is inert against any other host, so it costs nothing once
+ * the backend is on a real domain.
+ */
+async function backendFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: { "ngrok-skip-browser-warning": "1", ...(options.headers || {}) },
+  });
+}
 
 init();
 
@@ -44,7 +59,10 @@ async function init() {
   }
   // A bare hostname would resolve relative to the Freshdesk app origin and
   // 404 silently, which looks like "the backend is down" rather than a typo.
-  if (!/^https:\/\//i.test(BACKEND_URL)) {
+  // http://localhost is the one exemption: browsers already treat it as a
+  // secure context, and the mock backend serves plain HTTP for local dev.
+  const isLocalBackend = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(BACKEND_URL);
+  if (!/^https:\/\//i.test(BACKEND_URL) && !isLocalBackend) {
     setStatus("Backend URL must start with https:// — check this app's settings.");
     return;
   }
@@ -138,7 +156,7 @@ function setHangupVisible(visible) {
 
 async function restoreVobizSession() {
   try {
-    const res = await fetch(`${BACKEND_URL}/session/${encodeURIComponent(AGENT_ID)}`);
+    const res = await backendFetch(`${BACKEND_URL}/session/${encodeURIComponent(AGENT_ID)}`);
     const session = await res.json();
     if (session.loggedIn) {
       renderNumberOptions(session.numbers, session.from);
@@ -162,7 +180,7 @@ async function vobizLogin() {
   }
   setLoginStatus("Logging in…");
   try {
-    const res = await fetch(`${BACKEND_URL}/login`, {
+    const res = await backendFetch(`${BACKEND_URL}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agentId: AGENT_ID, authId, authToken }),
@@ -187,7 +205,7 @@ async function vobizLogin() {
 async function vobizSelectNumber() {
   const number = document.getElementById("vobiz-number-select").value;
   try {
-    const res = await fetch(`${BACKEND_URL}/select-number`, {
+    const res = await backendFetch(`${BACKEND_URL}/select-number`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agentId: AGENT_ID, number }),
@@ -214,7 +232,7 @@ async function setupInboundCalling() {
   statusEl.classList.remove("is-ok", "is-error");
   btn.setAttribute("disabled", true);
   try {
-    const res = await fetch(`${BACKEND_URL}/setup-inbound`, {
+    const res = await backendFetch(`${BACKEND_URL}/setup-inbound`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // Declaring the platform matters: this panel is browser-only, so the
@@ -246,7 +264,7 @@ async function loadCallHistory() {
   if (!listEl || !BACKEND_URL || !AGENT_ID) return;
 
   try {
-    const res = await fetch(`${BACKEND_URL}/recordings/${encodeURIComponent(AGENT_ID)}?limit=15`);
+    const res = await backendFetch(`${BACKEND_URL}/recordings/${encodeURIComponent(AGENT_ID)}?limit=15`);
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || "could not load recordings");
     renderCallHistory(json.objects || []);
@@ -366,7 +384,7 @@ function attachRemoteAudio(session) {
 async function initVobizSip() {
   let agent;
   try {
-    const res = await fetch(`${BACKEND_URL}/agent/${encodeURIComponent(AGENT_ID)}`);
+    const res = await backendFetch(`${BACKEND_URL}/agent/${encodeURIComponent(AGENT_ID)}`);
     if (!res.ok) {
       setStatus(`Could not load the identity "${AGENT_ID}" — check this app's settings.`);
       setSipRegistered(false);
@@ -390,6 +408,26 @@ async function initVobizSip() {
     uri: `sip:${agent.sipUser}`,
     password: agent.sipPassword,
     register: true,
+    // No space in the User-Agent, deliberately.
+    //
+    // Vobiz stores the registration's User-Agent and later interpolates it into
+    // a gateway URI as a `user_agent=` parameter when <Dial><User> routes a call
+    // back to this endpoint. JsSIP's default is "JsSIP 3.10.1" — the space makes
+    // that URI unparseable, and Kamailio drops the INVITE rather than ringing us:
+    //
+    //   ERROR: tr_eval_uri(): invalid uri [...;user_agent=JsSIP 3.10.1;...]
+    //   INVITE|blocking gw: ...
+    //
+    // The caller then hears ringback and nothing else, and the dial result reads
+    // ring=true with no B leg. Confirmed in vobiz-outboundsip logs, 16 Sep 2026.
+    user_agent: "VobizFreshdeskCalling/1.0.0",
+    // Vobiz's media server rejects JsSIP's default session-timer proposal with
+    // "422 Session Interval Too Small", which JsSIP surfaces to the app as the
+    // opaque cause "SIP Failure Code" and which produces no CDR at all, because
+    // the call is refused before it is ever created. Vobiz's own SDK sets this
+    // same flag (vobiz-webrtc-sdk/lib/managers/account.ts), so matching it is
+    // the supported configuration rather than a workaround.
+    session_timers: false,
   });
 
   vobizUA.on("registered", () => {
@@ -433,10 +471,35 @@ async function initVobizSip() {
       setHangupVisible(false);
     });
 
-    currentRTCSession.answer({ mediaConstraints: { audio: true, video: false } });
+    // answer() reaches for the microphone. Anything that throws here — no
+    // getUserMedia (the iframe is not a secure context), or the Freshdesk
+    // iframe not delegating microphone permission — used to abort this handler
+    // silently: the browser never picks up, Vobiz rings until it gives up, and
+    // the dial result reads "ring=true" with no B leg and no explanation
+    // anywhere. Say what happened instead.
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("navigator.mediaDevices is unavailable — this frame is not a secure context");
+      }
+      currentRTCSession.answer({ mediaConstraints: { audio: true, video: false } });
+    } catch (err) {
+      console.error("[Vobiz] could not answer the incoming leg:", err);
+      setStatus(`Could not answer — ${err.name === "NotAllowedError"
+        ? "microphone permission was refused for this frame"
+        : err.message}`);
+      try { currentRTCSession.terminate(); } catch { /* already gone */ }
+      currentRTCSession = null;
+      setHangupVisible(false);
+    }
   });
 
   vobizUA.start();
+
+  // Surface a dead microphone path at startup rather than mid-call.
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    console.error("[Vobiz] navigator.mediaDevices is unavailable in this frame — inbound audio cannot work.");
+    setStatus("No microphone access in this frame — calls will ring but cannot connect.");
+  }
 }
 
 async function onTriggerDialer(event) {
@@ -451,6 +514,27 @@ function onDialButtonClick() {
   placeCall(number);
 }
 
+/**
+ * Place an outbound call with this browser as the A leg.
+ *
+ * The obvious design — and what docs/backend-contract.md describes — is to have
+ * the backend originate to the customer over the REST API and then bridge this
+ * browser in with <Dial><User>. That path is dead: routing *into* a registered
+ * WebRTC endpoint is broken platform-side. Vobiz builds an unparseable gateway
+ * URI for the B leg and drops its own INVITE:
+ *
+ *   ERROR: tr_eval_uri(): invalid uri [user@…-webrtc-3.vobiz.ai:7032;…]
+ *   INVITE|blocking gw: …
+ *
+ * 510 of those in 14 days, across other accounts and Vobiz's own SDK. The caller
+ * hears ringback and nothing else, and the dial result reads ring=true with an
+ * empty DialBLegUUID.
+ *
+ * Dialling *out* of a registered endpoint works fine, so this sends the INVITE
+ * from here instead. Vobiz then fetches the endpoint application's answer URL,
+ * and the backend replies with <Dial><Number> to reach the customer — the same
+ * shape Vobiz's own rtc-demo and WebRTC playground use.
+ */
 async function placeCall(number) {
   if (!number) return;
 
@@ -460,71 +544,62 @@ async function placeCall(number) {
     numEl.hidden = false;
   }
 
-  let result;
-  try {
-    const res = await fetch(`${BACKEND_URL}/start-call`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: number, agentId: AGENT_ID, platform: "freshdesk" }),
-    });
-    result = await res.json();
-    if (!res.ok) {
-      const message = result.error || `Call failed (${res.status})`;
-      if (numEl) numEl.textContent = message;
-      setLoginStatus(message);
-      return;
-    }
-  } catch (err) {
-    console.error("[Vobiz] Could not start the call:", err);
-    if (numEl) numEl.textContent = "Could not reach the calling backend";
-    setLoginStatus("Could not reach the calling backend");
+  if (!vobizUA || !sipRegistered) {
+    const message = "Not registered yet — wait for the badge to go green.";
+    if (numEl) numEl.textContent = message;
+    setLoginStatus(message);
     return;
   }
 
-  const callUuid = result.request_uuid;
-  if (callUuid && numEl) watchCallStatus(callUuid, number, numEl);
-}
+  // Vobiz routes a bare E.164 destination; the registrar is the SIP domain.
+  const target = `sip:${String(number).replace(/[^\d+]/g, "")}@registrar.vobiz.ai`;
 
-// The AI/agent leg never rings into this browser tab, so there's no SIP
-// event here to say the call ended — poll Vobiz directly instead. Skips
-// the first couple of polls' worth of "ended" readings, since a
-// just-placed call is briefly "queued" (not "live" yet) and would
-// otherwise look like it already finished.
-function watchCallStatus(callUuid, number, numEl) {
-  let sawLive = false;
-  let ticks = 0;
-  // A generous ceiling so a genuinely long call is not cut off in the UI,
-  // while a call that never goes live still stops polling. Applied on every
-  // tick, not only while the call is idle.
-  const maxTicks = 1200; // ~60 minutes at 3s/tick
+  try {
+    const session = vobizUA.call(target, {
+      mediaConstraints: { audio: true, video: false },
+      // Without a STUN server the offer carries only host candidates, so Vobiz
+      // sees a private address and logs "PrivateIP … Detected in SDP"; the
+      // early-media answer that comes back is then rejected by the browser as
+      // an incompatible SDP and the call is cancelled inside a few hundred ms.
+      // These are the values Vobiz's own SDK uses.
+      pcConfig: { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] },
+      sessionTimersExpires: 300,
+    });
+    currentRTCSession = session;
+    attachRemoteAudio(session);
+    setHangupVisible(true);
 
-  // Two dials in one session would otherwise leave two timers racing on the
-  // same element, each independently scheduling a history refresh.
-  if (statusTimer) clearInterval(statusTimer);
-
-  const timer = setInterval(async () => {
-    ticks += 1;
-    try {
-      const res = await fetch(`${BACKEND_URL}/call-status/${encodeURIComponent(callUuid)}?agentId=${encodeURIComponent(AGENT_ID)}`);
-      const { active } = await res.json();
-      if (active) {
-        sawLive = true;
-        numEl.textContent = `On a call with ${number}…`;
-      }
-      if ((!active && sawLive) || ticks >= maxTicks) {
-        clearInterval(timer);
-        if (statusTimer === timer) statusTimer = null;
+    session.on("progress", () => { if (numEl) numEl.textContent = `Ringing ${number}…`; });
+    session.on("confirmed", () => {
+      if (numEl) numEl.textContent = `On a call with ${number}`;
+      setStatus("On a call");
+    });
+    session.on("failed", e => {
+      const cause = (e && e.cause) || "unknown";
+      if (numEl) numEl.textContent = `Call failed — ${cause}`;
+      setStatus("Ready");
+      currentRTCSession = null;
+      setHangupVisible(false);
+    });
+    session.on("ended", () => {
+      if (numEl) {
         numEl.textContent = "Call ended";
         setTimeout(() => { numEl.hidden = true; }, 4000);
-        // Vobiz writes the CDR a few seconds after the call actually ends,
-        // so refresh a beat later rather than immediately (an instant
-        // refresh would just miss this call and look like nothing happened).
-        setTimeout(loadCallHistory, 5000);
       }
-    } catch (err) {
-      console.warn("[Vobiz] call-status poll failed:", err);
-    }
-  }, 3000);
-
-  statusTimer = timer;
+      setStatus("Ready");
+      currentRTCSession = null;
+      setHangupVisible(false);
+      // Vobiz writes the CDR a few seconds after the call ends, so refreshing
+      // immediately would miss this call and look like nothing happened.
+      setTimeout(loadCallHistory, 5000);
+    });
+  } catch (err) {
+    console.error("[Vobiz] Could not start the call:", err);
+    const message = err && err.name === "NotAllowedError"
+      ? "Microphone permission was refused for this frame"
+      : `Could not start the call — ${err.message}`;
+    if (numEl) numEl.textContent = message;
+    setLoginStatus(message);
+  }
 }
+

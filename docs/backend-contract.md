@@ -77,21 +77,26 @@ On failure return a non-2xx status with `{ "error": "..." }`.
 
 → `{ "selected": "+919876543211" }`
 
-### `POST /start-call`
+### `POST /start-call` — *no longer used for outbound*
+
+The panel does **not** ask the backend to originate outbound calls any more. It
+sends the SIP INVITE itself, so the browser is the **A leg**, and your `/answer`
+handler bridges outward with `<Dial><Number>`.
+
+The previous design — backend originates to the customer over the REST API, then
+bridges the browser in with `<Dial><User>` — is dead. Routing *into* a registered
+WebRTC endpoint is broken platform-side: Vobiz builds an unparseable gateway URI
+and drops its own INVITE. Verified across other accounts and Vobiz's own SDK; see
+[ISSUES.md](../ISSUES.md).
+
+Keep the route if you want a server-originated fallback (for ringing an agent's
+mobile, say). Its shape is unchanged:
 
 ```json
 { "to": "+919876543210", "agentId": "priya", "platform": "freshdesk" }
 ```
 
 → `{ "request_uuid": "..." }`
-
-Reject with a non-2xx and `{ "error": "..." }` when the agent has no session.
-
-**Call order is load-bearing.** Dial the *customer* first via the Vobiz REST
-API, then bridge the agent's registered browser in via `<Dial><User>` in your
-`/answer` response. The reverse does not work: the REST API cannot originate to
-a registered WebRTC endpoint and returns `Endpoint Not Registered`. This is also
-why the person you call hears a few seconds of ringback after answering.
 
 ### `GET /call-status/{callUuid}?agentId={agentId}`
 
@@ -135,11 +140,45 @@ These are webhooks. Vobiz must reach them over public HTTPS.
 
 ### `GET|POST /answer`
 
-Returns the XML that bridges your agent into an outbound call:
+One handler serves both directions. Pick by looking at who the call is *from*:
+
+- `From` starts with `sip:` (or `RouteType=sip`) → the **browser dialled out**.
+  Bridge to the PSTN with `<Dial><Number>`.
+- `From` is a plain number → a **PSTN caller** reached your DID. Bridge to the
+  browser with `<Dial><User>`.
 
 ```xml
-<Response><Dial><User>sip:priya@registrar.vobiz.ai</User></Dial></Response>
+<!-- browser is the A leg, dialling out -->
+<Response>
+  <Dial callerId="+919876543210" timeout="30" timeLimit="14400"
+        action="https://you.example.com/dial-status" method="POST" redirect="false">
+    <Number>919876543211</Number>
+  </Dial>
+</Response>
+
+<!-- PSTN inbound, bridging into the browser (currently blocked platform-side) -->
+<Response>
+  <Dial callerId="+919876543210" timeout="30" timeLimit="14400"
+        action="https://you.example.com/dial-status" method="POST" redirect="false">
+    <User>sip:priya@registrar.vobiz.ai</User>
+  </Dial>
+</Response>
 ```
+
+**`action` and `redirect="false"` are required.** Without them Vobiz re-fetches
+the answer URL when `<Dial>` ends and re-executes the document, so one call hits
+this webhook repeatedly and dials again each time.
+
+**An `Event=Hangup` request is not a request for instructions.** Answer it with
+an empty `<Response></Response>`; returning `<Dial>` originates a fresh leg after
+the call has already ended.
+
+### `GET|POST /dial-status`
+
+The `action` target above. Return `200` with an empty body. Log `DialStatus`,
+`DialHangupCause` and especially `DialBLegUUID` — an empty `DialBLegUUID` means
+no B leg was ever created, which is the signature of an unreachable destination
+or a caller ID the account does not own.
 
 ### `GET|POST /inbound-answer`
 

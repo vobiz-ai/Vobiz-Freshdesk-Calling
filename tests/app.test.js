@@ -24,6 +24,27 @@ describe("configuration", () => {
     expect(t.text("status-message")).toMatch(/must start with https/i);
   });
 
+  it("accepts http://localhost so the mock backend is usable", async () => {
+    // Browsers already treat localhost as a secure context, and mock-backend/
+    // serves plain HTTP. Without this the panel bails out of init() before the
+    // Log in button is wired up, so the button silently does nothing.
+    const fetch = routes({ "/agent/": AGENT_OK });
+    const t = await boot({ iparams: { backend_url: "http://localhost:8092", agent_id: "priya" }, fetch });
+    expect(t.text("status-message")).not.toMatch(/must start with https/i);
+    expect(String(fetch.mock.calls[0][0])).toBe("http://localhost:8092/agent/priya");
+  });
+
+  it("accepts http://127.0.0.1 as well", async () => {
+    const fetch = routes({ "/agent/": AGENT_OK });
+    const t = await boot({ iparams: { backend_url: "http://127.0.0.1:8092", agent_id: "priya" }, fetch });
+    expect(t.text("status-message")).not.toMatch(/must start with https/i);
+  });
+
+  it("still rejects a non-local http host that merely contains localhost", async () => {
+    const t = await boot({ iparams: { backend_url: "http://localhost.evil.example", agent_id: "priya" } });
+    expect(t.text("status-message")).toMatch(/must start with https/i);
+  });
+
   it("strips trailing slashes from the backend URL", async () => {
     const fetch = routes({ "/agent/": AGENT_OK });
     await boot({ iparams: { ...SETTINGS, backend_url: "https://backend.example.com///" }, fetch });
@@ -226,19 +247,16 @@ describe("click-to-call", () => {
   });
 
   it("opens the panel and dials the clicked number", async () => {
-    const fetch = routes({
-      "/agent/": AGENT_OK,
-      "/session/": { body: { loggedIn: false } },
-      "/start-call": { body: { request_uuid: "uuid-1" } },
-    });
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } });
     const t = await boot({ iparams: SETTINGS, fetch });
+    t.ua.emit("registered");
     t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
     await flush();
 
     expect(t.triggers).toContainEqual(["show", { id: "softphone" }]);
-    const call = fetch.mock.calls.find(c => String(c[0]).includes("/start-call"));
-    expect(call).toBeTruthy();
-    expect(JSON.parse(call[1].body)).toMatchObject({ to: "+911140848108", agentId: "priya", platform: "freshdesk" });
+    // The browser is the A leg, so this is a SIP INVITE from here, not a
+    // request asking the backend to originate the call.
+    expect(t.ua.calls.at(-1).target).toBe("sip:+911140848108@registrar.vobiz.ai");
   });
 
   it("does nothing when the payload carries no number", async () => {
@@ -249,32 +267,29 @@ describe("click-to-call", () => {
     expect(fetch.mock.calls.some(c => String(c[0]).includes("/start-call"))).toBe(false);
   });
 
-  it("surfaces a backend refusal to place the call", async () => {
+  it("refuses to dial while SIP is not registered", async () => {
+    // Dialling unregistered would send no INVITE at all and leave the agent
+    // watching a "Calling…" label that never resolves.
     const t = await boot({
       iparams: SETTINGS,
-      fetch: routes({
-        "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: false } },
-        "/start-call": { ok: false, status: 401, body: { error: "Log in before placing a call" } },
-      }),
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
     });
     t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
     await flush();
-    expect(t.text("callnum")).toMatch(/log in before placing a call/i);
+    expect(t.ua.calls).toHaveLength(0);
+    expect(t.text("callnum")).toMatch(/not registered yet/i);
   });
 
-  it("surfaces an unreachable backend when dialling", async () => {
+  it("surfaces a refused microphone instead of failing silently", async () => {
     const t = await boot({
       iparams: SETTINGS,
-      fetch: routes({
-        "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: false } },
-        "/start-call": new Error("ECONNREFUSED"),
-      }),
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
     });
+    t.ua.emit("registered");
+    t.ua.call = () => { const e = new Error("Permission denied"); e.name = "NotAllowedError"; throw e; };
     t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
     await flush();
-    expect(t.text("callnum")).toMatch(/could not reach the calling backend/i);
+    expect(t.text("callnum")).toMatch(/microphone permission was refused/i);
   });
 });
 
