@@ -8,6 +8,22 @@ This is a **custom app**. You install it on your own Freshdesk account — there
 is no Marketplace approval to wait for, and it is usually live within about
 thirty minutes of upload.
 
+> ## ⚠️ Browser calling does not currently work
+>
+> VoBiz's registrar accepts the panel's SIP registration and replies `200 OK`,
+> then reports the endpoint as `sip_registered: "false"` and refuses to route
+> calls to it (hangup cause `2020`). Reproduced with no browser at all, and over
+> two different transports, so it is not this app, Freshdesk, or JsSIP — it is a
+> platform-side defect awaiting a fix from VoBiz.
+>
+> Everything else works: the panel loads, authenticates, places outbound calls
+> that ring and connect, and lists recordings. What fails is the audio reaching
+> the **browser**. Calls connect today only by ringing the agent's phone
+> alongside it.
+>
+> **Read [ISSUES.md](ISSUES.md) before spending time debugging this** — it
+> records the full evidence and everything already ruled out.
+
 ```
 Freshdesk  ──cti.triggerDialer──▶  this app  ──HTTPS──▶  your calling backend  ──▶  Vobiz REST API
                                        │                                              │
@@ -92,30 +108,53 @@ npm run mock-backend     # terminal 1 — http://localhost:8092
 fdk run                  # terminal 2 — http://localhost:10001
 ```
 
-Open a Freshdesk page with `?dev=true` appended, and set the app's settings at
-<http://localhost:10001/custom_configs>:
+On the **first** `fdk run`, FDK asks which account to simulate at
+<http://localhost:10001/system_settings> before it will let you set anything
+else. Both fields come from your Freshdesk URL — **Organization Domain** without
+the scheme (`yourcompany.freshdesk.com`), **account URL** with it
+(`https://yourcompany.freshdesk.com`). Product type is `DEFAULT` unless you are
+on Freshdesk Omni.
+
+Then set the app's settings at <http://localhost:10001/custom_configs>:
 
 | Setting | Value |
 | --- | --- |
-| Calling backend URL | `http://localhost:8092` |
+| Calling backend URL | an **`https://`** URL — see the warning below |
 | Agent identity | anything, e.g. `priya` |
 | SIP registrar URL | leave blank |
+
+> ⚠️ **`http://localhost:8092` will not work, despite what the mock backend's
+> own README says.** The panel rejects any backend URL that is not `https://`
+> and returns early — *before* the Log in button's click handler is attached, so
+> the button silently does nothing. This is a real bug in this repository:
+> [ISSUES.md #3](ISSUES.md#issue-3--the-mock-backend-cannot-be-used-as-documented).
 
 Any Auth ID and Auth Token are accepted; use `fail` as the Auth ID to see the
 error path. See [mock-backend/README.md](mock-backend/README.md) for the rest,
 including how to point it at a real Vobiz SIP endpoint to test actual audio.
 
+Open a Freshdesk page with `?dev=true` appended to load the panel from your
+machine. Without that flag Freshdesk looks for a published version and the icon
+never appears.
+
 ## Tests
 
 ```bash
-npm test        # 45 tests, with coverage
-fdk validate    # platform and lint rules
-fdk pack        # build dist/
+npm test        # 50 tests, with coverage
+fdk validate    # platform and lint rules — passes, 0 platform errors
+fdk pack        # build dist/ — currently FAILS, see below
 ```
 
-Current coverage is **97.8% of statements, 100% of functions, 80.8% of
+Current coverage is **97.9% of statements, 100% of functions, 81.9% of
 branches** — Freshworks requires 80% on every metric for Marketplace
 submission, and `fdk pack` enforces it.
+
+> ⚠️ **`fdk pack` currently fails.** FDK lints every `.js` file under `app/`,
+> including the vendored `app/lib/jssip.min.js`, and JsSIP's own source uses
+> `var` 901 times. `.fdkignore`, `.eslintignore` and moving the file elsewhere
+> were all tried and are all ignored by FDK. `fdk run` and `fdk validate` are
+> unaffected, so local development works — only the packaged-install path is
+> blocked. See [ISSUES.md #2](ISSUES.md#issue-2--fdk-pack-fails-lint-on-the-vendored-jssip-bundle).
 
 The tests load the real `app/scripts/app.js` and the real markup from
 `app/index.html` into jsdom with the Freshworks SDK, JsSIP, and `fetch` faked,
@@ -126,8 +165,19 @@ so they exercise the code that ships rather than a copy of it.
 > For local builds use `fdk pack --skip-coverage`; do not use that flag for a
 > Marketplace submission.
 
-The whole app is three files — `app/index.html`, `app/scripts/app.js`, and
-`app/styles/style.css`. There is no build step and no framework.
+The app itself is three files — `app/index.html`, `app/scripts/app.js`, and
+`app/styles/style.css`. There is no framework.
+
+The one build artefact is `app/lib/jssip.min.js`, vendored because **JsSIP has
+no browser build on any CDN** — the npm package ships CommonJS only, and the URL
+this repository used to load it from had never worked. Rebuild it with:
+
+```bash
+npm i jssip@3.10.1
+echo "module.exports = require('jssip');" > entry.js
+npx esbuild entry.js --bundle --minify --format=iife \
+  --global-name=JsSIP --outfile=app/lib/jssip.min.js
+```
 
 ## What is in this repository
 
@@ -136,21 +186,36 @@ The whole app is three files — `app/index.html`, `app/scripts/app.js`, and
 | `manifest.json`, `config/` | The Freshworks app manifest and its installation settings |
 | `app/` | The panel itself — markup, script, styles, icon |
 | `mock-backend/` | A zero-dependency fake backend for local development |
-| `tests/` | 45 tests against the real source, run with Vitest in jsdom |
+| `app/lib/jssip.min.js` | Vendored JsSIP browser bundle — see [Tests](#tests) for why |
+| `tests/` | 50 tests against the real source, run with Vitest in jsdom |
+| `ISSUES.md` | Open problems and everything already ruled out. **Read this first** |
 | `docs/backend-contract.md` | Every endpoint the backend must implement, and its security requirements |
 | `docs/install.md` | Installing as a Freshdesk custom app, with troubleshooting |
 | `docs/architecture.md` | How a Freshdesk CTI app works, and what this one does not do yet |
 
 ## Known limitations
 
-Honest list, so nobody is surprised:
+Honest list, so nobody is surprised. Full detail in **[ISSUES.md](ISSUES.md)**.
 
-- **The panel is a softphone, not a full CTI integration.** It does not yet
-  create tickets, log calls as ticket notes, pop the contact record on an
-  inbound call, or attach recordings to a ticket. Click-to-call works; the rest
-  is on the roadmap in [CHANGELOG.md](CHANGELOG.md).
+- **Browser audio does not work.** VoBiz acknowledges the panel's registration
+  and then refuses to route calls to it. Platform-side, not fixable here, and
+  the single biggest thing standing between this app and being usable.
+  [ISSUES.md #1](ISSUES.md#issue-1--vobiz-never-records-the-endpoints-registration).
+- **`fdk pack` fails**, so it cannot currently be installed as a custom app.
+  [ISSUES.md #2](ISSUES.md#issue-2--fdk-pack-fails-lint-on-the-vendored-jssip-bundle).
+- **The documented local-development setup does not work** — the mock backend is
+  served over `http://`, which the panel rejects.
+  [ISSUES.md #3](ISSUES.md#issue-3--the-mock-backend-cannot-be-used-as-documented).
+- **Inbound calls auto-answer**, with no ring, no caller ID and no
+  Accept/Decline.
+  [ISSUES.md #5](ISSUES.md#issue-5--inbound-calls-auto-answer-with-no-popup).
+- **The panel is a softphone, not a full CTI integration.** It does not create
+  tickets, log calls as ticket notes, pop the contact record on an inbound call,
+  or attach recordings to a ticket. Click-to-call works; the rest is on the
+  roadmap in [CHANGELOG.md](CHANGELOG.md).
 - **Browser calling only.** There is no option to route calls to an agent's
-  mobile or desk phone.
+  mobile or desk phone — which is why the defect above is fatal here, while
+  other VoBiz integrations can fall back to ringing a phone.
 - **No hold, mute, transfer, or conference.**
 - **One agent identity per installation**, set by an admin.
 
