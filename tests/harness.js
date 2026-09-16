@@ -66,15 +66,22 @@ class FakeUA {
 
 /** A stand-in for an inbound JsSIP RTC session. */
 export class FakeSession {
-  constructor() {
+  constructor(from = "919876543210") {
     this.handlers = {};
     this.answered = false;
     this.terminated = false;
     this.connection = null;
+    // What JsSIP exposes for the far end. The panel reads this to show who is
+    // calling, so a fake without it silently renders "unknown".
+    this.remote_identity = { uri: { user: from }, display_name: null };
+    // Captured so a test can assert HOW the call was answered, not just that it
+    // was — the pcConfig is the difference between a connected call and a leg
+    // billed 0s.
+    this.answerOptions = null;
   }
   on(event, cb) { (this.handlers[event] ||= []).push(cb); }
   emit(event, payload) { (this.handlers[event] || []).forEach(cb => cb(payload)); }
-  answer() { this.answered = true; }
+  answer(options) { this.answered = true; this.answerOptions = options || {}; }
   terminate() { this.terminated = true; }
 }
 

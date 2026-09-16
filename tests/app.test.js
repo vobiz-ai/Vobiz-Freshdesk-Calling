@@ -305,22 +305,164 @@ describe("an inbound leg", () => {
     return { t, session };
   }
 
-  it("is answered, and exposes a way to end it", async () => {
+  it("is NOT answered on arrival — it waits to be accepted", async () => {
+    // answer() reaches for the microphone, and a browser treats a microphone
+    // request that follows no user gesture differently from one that follows a
+    // click. Answering on arrival left calls ringing until the caller gave up,
+    // with a leg billed 0s and nothing to explain it.
     const { t, session } = await ringIn();
+    expect(session.answered).toBe(false);
+    expect(t.el("incoming").hidden).toBe(false);
+  });
+
+  it("shows who is calling", async () => {
+    const { t } = await ringIn();
+    expect(t.el("incoming-from").textContent).toBe("+919876543210");
+  });
+
+  it("answers when accepted, and exposes a way to end it", async () => {
+    const { t, session } = await ringIn();
+    t.el("acceptbtn").click();
     expect(session.answered).toBe(true);
+    expect(t.el("incoming").hidden).toBe(true);
     expect(t.el("hangupbtn").hidden).toBe(false);
+  });
+
+  it("answers with STUN, or the leg is billed 0s and never connects", async () => {
+    const { t, session } = await ringIn();
+    t.el("acceptbtn").click();
+    const opts = session.answerOptions || {};
+    expect(opts.pcConfig).toBeTruthy();
+    expect(JSON.stringify(opts.pcConfig)).toContain("stun:");
+  });
+
+  it("terminates the call when declined, without answering it", async () => {
+    const { t, session } = await ringIn();
+    t.el("declinebtn").click();
+    expect(session.answered).toBe(false);
+    expect(session.terminated).toBe(true);
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("clears the banner if the caller gives up first", async () => {
+    // Otherwise an Accept button is left on screen for a call that no longer
+    // exists, and clicking it answers nothing.
+    const { t, session } = await ringIn();
+    session.emit("ended");
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("clears the banner if Vobiz times the leg out", async () => {
+    const { t, session } = await ringIn();
+    session.emit("failed", { cause: "Canceled" });
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("accepts on Enter and declines on Escape", async () => {
+    const accepted = await ringIn();
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(accepted.session.answered).toBe(true);
+
+    const declined = await ringIn();
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(declined.session.terminated).toBe(true);
+    expect(declined.session.answered).toBe(false);
+  });
+
+  it("ignores those keys when no call is ringing", async () => {
+    // The listener is on document, so it sees every keystroke in the panel —
+    // including an agent typing a number into the dial box.
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
+    });
+    t.ua.emit("registered");
+    expect(t.el("incoming").hidden).toBe(true);
+    expect(() => {
+      document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    }).not.toThrow();
+  });
+
+  it("shows a number already in E.164 unchanged, and falls back sensibly", async () => {
+    async function ringFrom(identity) {
+      const t = await boot({
+        iparams: SETTINGS,
+        fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
+      });
+      t.ua.emit("registered");
+      const session = new FakeSession();
+      session.remote_identity = identity;
+      t.ua.emit("newRTCSession", { originator: "remote", session });
+      return t;
+    }
+
+    let t = await ringFrom({ uri: { user: "+919876543210" } });
+    expect(t.el("incoming-from").textContent).toBe("+919876543210");
+
+    t = await ringFrom({ uri: null, display_name: "Support Desk" });
+    expect(t.el("incoming-from").textContent).toBe("Support Desk");
+
+    // A withheld number should not render "undefined" at an agent.
+    t = await ringFrom({});
+    expect(t.el("incoming-from").textContent).toBe("unknown");
+  });
+
+  it("still rings visually when the browser has no AudioContext", async () => {
+    // The ringtone is a convenience. Losing it must not cost the call.
+    const realCtx = window.AudioContext;
+    const realWebkit = window.webkitAudioContext;
+    window.AudioContext = undefined;
+    window.webkitAudioContext = undefined;
+    try {
+      const { t, session } = await ringIn();
+      expect(t.el("incoming").hidden).toBe(false);
+      t.el("acceptbtn").click();
+      expect(session.answered).toBe(true);
+    } finally {
+      window.AudioContext = realCtx;
+      window.webkitAudioContext = realWebkit;
+    }
+  });
+
+  it("clears the banner even if terminating the declined call throws", async () => {
+    // JsSIP throws if the session is already gone — which is exactly what a
+    // race between the caller hanging up and the agent clicking Decline looks
+    // like. Leaving the banner up would strand a dead Accept on screen.
+    const { t, session } = await ringIn();
+    session.terminate = () => { throw new Error("already terminated"); };
+    expect(() => t.el("declinebtn").click()).not.toThrow();
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("says so and drops the call when the microphone is unavailable", async () => {
+    // Rather than answering into silence, or leaving the call ringing with no
+    // explanation anywhere.
+    const { t, session } = await ringIn();
+    const real = navigator.mediaDevices;
+    Object.defineProperty(navigator, "mediaDevices", { value: undefined, configurable: true });
+    try {
+      t.el("acceptbtn").click();
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", { value: real, configurable: true });
+    }
+    expect(session.answered).toBe(false);
+    expect(session.terminated).toBe(true);
+    expect(t.el("status-message").textContent).toMatch(/could not answer/i);
   });
 
   it("hangs up when asked", async () => {
     // Regression: there was no hangup control at all, and .terminate() was
     // never called anywhere in the app.
     const { t, session } = await ringIn();
+    t.el("acceptbtn").click();
     t.el("hangupbtn").click();
     expect(session.terminated).toBe(true);
   });
 
   it("hides the hangup control once the call ends", async () => {
     const { t, session } = await ringIn();
+    t.el("acceptbtn").click();
     session.emit("ended");
     expect(t.el("hangupbtn").hidden).toBe(true);
   });
@@ -328,7 +470,9 @@ describe("an inbound leg", () => {
   it("binds audio through the peerconnection event, not session.connection", async () => {
     // session.connection is null until the call is answered; dereferencing it
     // inside the newRTCSession handler threw and aborted before .answer().
-    const { session } = await ringIn();
+    // Binding happens on accept, since that is when the call is answered.
+    const { t, session } = await ringIn();
+    t.el("acceptbtn").click();
     expect(session.handlers.peerconnection).toBeTruthy();
 
     const pc = { addEventListener: vi.fn() };

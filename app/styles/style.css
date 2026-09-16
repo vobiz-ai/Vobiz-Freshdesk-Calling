@@ -427,6 +427,67 @@ select {
   color: #fff;
 }
 
+.btn-accept {
+  background: var(--ok);
+  color: #fff;
+}
+
+/* === Incoming call === */
+.incoming {
+  margin: 0 0 14px;
+  padding: 16px;
+  background: var(--ok-soft);
+  border: 1px solid var(--ok);
+  border-radius: var(--r-lg);
+  text-align: center;
+  animation: incoming-pulse 2s ease-in-out infinite;
+}
+
+.incoming-label {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ok);
+}
+
+.incoming-from {
+  margin: 0 0 12px;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.incoming-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.incoming-actions .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+.incoming-hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* Draws the eye without moving anything — the buttons underneath stay put, so
+   a pulse can never shift Accept out from under a click. */
+@keyframes incoming-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(21 128 61 / 0.30); }
+  50%      { box-shadow: 0 0 0 7px rgb(21 128 61 / 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .incoming { animation: none; }
+}
+
 .btn[disabled],
 button[disabled] {
   opacity: 0.4;
