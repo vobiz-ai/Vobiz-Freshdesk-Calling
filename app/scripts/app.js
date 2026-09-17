@@ -86,7 +86,6 @@ async function init() {
   document.getElementById("vobiz-login-btn").addEventListener("click", vobizLogin);
   document.getElementById("vobiz-number-select").addEventListener("change", vobizSelectNumber);
   document.getElementById("setup-inbound-btn").addEventListener("click", setupInboundCalling);
-  document.getElementById("refresh-history-btn").addEventListener("click", loadCallHistory);
   document.getElementById("hangupbtn").addEventListener("click", hangUp);
   document.getElementById("acceptbtn").addEventListener("click", acceptCall);
   document.getElementById("declinebtn").addEventListener("click", declineCall);
@@ -272,6 +271,9 @@ function joinRoom(room, from) {
 
   try {
     const session = vobizUA.call(`sip:${target}@registrar.vobiz.ai`, {
+      // The Record choice applies to an inbound call too. Recording starts when
+      // this leg joins, so the caller's time on hold is not in the file.
+      extraHeaders: callHeaders(),
       ...(warmed ? { mediaStream: warmed } : { mediaConstraints: { audio: true, video: false } }),
       // Same reason as every other leg: without STUN the offer carries only
       // host candidates and the call is torn down before any audio flows.
@@ -521,7 +523,6 @@ async function restoreVobizSession() {
       renderNumberOptions(session.numbers, session.from);
       setLoginStatus(`Logged in as ${session.authId} — calling from ${session.from}`);
       setDialEnabled(true);
-      loadCallHistory();
     } else {
       setDialEnabled(false);
     }
@@ -553,7 +554,6 @@ async function vobizLogin() {
         : `Logged in as ${authId} — this account has no phone numbers yet`,
     );
     setDialEnabled(Boolean(data.selected));
-    if (data.selected) loadCallHistory();
   } catch (err) {
     console.error("[Vobiz] Login failed:", err);
     setLoginStatus(`Login failed: ${err.message}`);
@@ -611,72 +611,40 @@ async function setupInboundCalling() {
   }
 }
 
-/** === Call recordings ===
- * Only the Recording list — no CDR merge, no phone numbers or SIP legs
- * shown. Played through /recording-audio/:agentId/:recordingId — the
- * backend proxy that adds the auth headers a plain <audio> tag can't
- * send itself. Field names match Vobiz's real Recording object
- * (add_time, rounded_recording_duration, recording_id).
+/**
+ * === Recording ===
+ *
+ * Whether a call is recorded is decided per call, by the agent, and travels on
+ * the call itself: Vobiz strips headers beginning `X-VH-` off the INVITE and
+ * hands them to the answer webhook as ordinary fields, so a ticked box here
+ * becomes `<Record>` in the XML the backend returns. Unticked sends no header,
+ * the backend emits no `<Record>`, and nothing is recorded or billed for.
+ *
+ * The same header rides on every call this panel places — a dialled number, or
+ * the leg that joins an inbound caller's room — so both directions obey the
+ * box without the backend having to remember anything between requests.
+ *
+ * There is no recordings list here any more. Recordings live in the Vobiz
+ * Console, which already lists them; mirroring that meant streaming call audio
+ * back out through the calling backend, so anyone who could reach the backend
+ * could pull recordings out of it.
  */
-async function loadCallHistory() {
-  const listEl = document.getElementById("call-history-list");
-  if (!listEl || !BACKEND_URL || !AGENT_ID) return;
-
-  try {
-    const res = await backendFetch(`${BACKEND_URL}/recordings/${encodeURIComponent(AGENT_ID)}?limit=15`);
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || "could not load recordings");
-    renderCallHistory(json.objects || []);
-  } catch (err) {
-    console.warn("[Vobiz] Could not load recordings:", err);
-    listEl.innerHTML = `<li class="empty">Could not load recordings.</li>`;
-  }
+function wantsRecording() {
+  const box = document.getElementById("record-call");
+  return Boolean(box && box.checked);
 }
 
-function renderCallHistory(recordings) {
-  const listEl = document.getElementById("call-history-list");
-  if (!listEl) return;
-
-  if (!recordings.length) {
-    listEl.innerHTML = `<li class="empty">No recordings yet.</li>`;
-    return;
-  }
-
-  listEl.innerHTML = "";
-  recordings.forEach(rec => {
-    const seconds = Number(rec.rounded_recording_duration) || 0;
-    const durationText = seconds > 0 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : "";
-    const when = rec.add_time && new Date(rec.add_time);
-    const whenText = when && !isNaN(when) ? when.toLocaleString() : "";
-
-    const li = document.createElement("li");
-
-    const info = document.createElement("span");
-    info.className = "info";
-    const metaEl = document.createElement("span");
-    metaEl.className = "meta";
-    metaEl.textContent = [durationText, whenText].filter(Boolean).join(" · ") || "Call recording";
-    info.append(metaEl);
-
-    const playBtn = document.createElement("button");
-    playBtn.className = "secondary-btn play-btn";
-    playBtn.textContent = "▶ Play";
-    playBtn.addEventListener("click", () => playRecording(rec.recording_id));
-
-    li.append(info, playBtn);
-    listEl.appendChild(li);
-  });
-}
-
-function playRecording(recordingId) {
-  const audioEl = document.getElementById("vobiz-playback-audio");
-  if (!audioEl) return;
-  audioEl.src = `${BACKEND_URL}/recording-audio/${encodeURIComponent(AGENT_ID)}/${encodeURIComponent(recordingId)}`;
-  // The element is hidden until there is something to play; an empty native
-  // player renders as a bright browser-chrome blob.
-  audioEl.hidden = false;
-  audioEl.classList.add("is-visible");
-  audioEl.play().catch(err => console.warn("[Vobiz] recording playback blocked:", err));
+/**
+ * Extra SIP headers for a call, as JsSIP wants them: whole header lines.
+ *
+ * Vobiz applies its own rules to these and silently drops anything that fails
+ * them, so keep values inside [A-Za-z0-9_+()%.-] with no spaces. `true` is
+ * safely inside that set.
+ */
+function callHeaders() {
+  const headers = [];
+  if (wantsRecording()) headers.push("X-VH-Record: true");
+  return headers;
 }
 
 /**
@@ -892,6 +860,8 @@ async function placeCall(number) {
 
   try {
     const session = vobizUA.call(target, {
+      // Carries the Record choice to the backend — see callHeaders().
+      extraHeaders: callHeaders(),
       mediaConstraints: { audio: true, video: false },
       // Without a STUN server the offer carries only host candidates, so Vobiz
       // sees a private address and logs "PrivateIP … Detected in SDP"; the
@@ -925,9 +895,6 @@ async function placeCall(number) {
       setStatus("Ready");
       currentRTCSession = null;
       setHangupVisible(false);
-      // Vobiz writes the CDR a few seconds after the call ends, so refreshing
-      // immediately would miss this call and look like nothing happened.
-      setTimeout(loadCallHistory, 5000);
     });
   } catch (err) {
     console.error("[Vobiz] Could not start the call:", err);

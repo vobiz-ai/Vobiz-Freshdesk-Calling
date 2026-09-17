@@ -131,6 +131,13 @@
               <label class="field-label" for="dialnumber">Number to call</label>
               <input type="tel" id="dialnumber" class="input input-mono input-dial" placeholder="+91 98765 43210" />
             </div>
+            <label class="check-row" for="record-call">
+              <input type="checkbox" id="record-call" />
+              <span class="check-text">
+                Record this call
+                <span class="check-note">Recorded calls are billed. Play them back in the Vobiz Console.</span>
+              </span>
+            </label>
             <div class="actions">
               <button id="dialbtn" class="btn btn-primary" disabled>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -168,20 +175,6 @@
         </section>
       </div>
 
-      <div id="call-history">
-        <div class="section-title">
-          <span>Call recordings</span>
-          <button id="refresh-history-btn" class="icon-btn" title="Refresh" aria-label="Refresh recordings">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-              <path d="M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-              <path d="M8 16H3v5"/>
-            </svg>
-          </button>
-        </div>
-        <ul id="call-history-list"></ul>
-        <audio id="vobiz-playback-audio" controls hidden></audio>
-      </div>
 
       <!-- Explanation, kept at the bottom so it never gets in the way. -->
       <details class="faq">
@@ -223,9 +216,16 @@
         <div class="faq-item">
           <h3>Where do recordings go?</h3>
           <p>
-            Vobiz records the call and this panel lists recent ones above.
-            Playback is proxied through your calling backend, because recording
-            files need authentication a plain audio tag cannot send.
+            Tick <strong>Record this call</strong> before dialling and Vobiz
+            records that call. Leave it clear and nothing is recorded, and
+            nothing is billed for recording.
+          </p>
+          <p>
+            Play them back in the <strong>Vobiz Console</strong>, under
+            Voice &rarr; Recordings. They are not listed here: this panel would
+            only be showing you a copy of what the Console already holds, and
+            serving the audio through the calling backend meant that backend
+            could hand out call recordings to anyone who could reach it.
           </p>
         </div>
       </details>

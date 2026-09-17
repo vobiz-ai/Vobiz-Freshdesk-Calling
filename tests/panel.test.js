@@ -5,17 +5,8 @@ const LOGGED_IN = {
   body: { loggedIn: true, numbers: ["+911140848108", "+911140848109"], from: "+911140848108", authId: "MA_TEST" },
 };
 
-const RECORDINGS = {
-  body: {
-    objects: [
-      { recording_id: "rec_a", add_time: "2026-09-14 11:42:07", rounded_recording_duration: 96 },
-      { recording_id: "rec_b", add_time: "2026-09-14 10:18:44", rounded_recording_duration: 41 },
-    ],
-  },
-};
-
 function base(extra = {}) {
-  return routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS, ...extra });
+  return routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, ...extra });
 }
 
 beforeEach(() => {
@@ -57,7 +48,6 @@ describe("caller-ID selection", () => {
       fetch: routes({
         "/agent/": AGENT_OK,
         "/session/": { body: { loggedIn: true, numbers: [], from: null, authId: "MA_TEST" } },
-        "/recordings/": RECORDINGS,
       }),
     });
     await flush();
@@ -98,60 +88,73 @@ describe("inbound setup", () => {
   });
 });
 
-describe("call recordings", () => {
-  it("lists recordings once logged in", async () => {
+describe("recording is chosen per call, by the agent", () => {
+  /**
+   * Whether a call is recorded travels ON the call, as the `X-VH-Record` SIP
+   * header Vobiz hands to the answer webhook. Nothing is stored server-side, so
+   * these assert the header itself — that is the entire contract.
+   */
+  async function dial(record) {
     const t = await boot({ iparams: SETTINGS, fetch: base() });
     await flush();
-    const items = t.el("call-history-list").querySelectorAll("li");
-    expect(items.length).toBe(2);
+    t.ua.emit("registered");
+    if (record) t.el("record-call").checked = true;
+    t.el("dialnumber").value = "+919876543210";
+    t.el("dialbtn").click();
+    await flush();
+    return t;
+  }
+
+  it("sends no header when the box is clear, so nothing is recorded or billed", async () => {
+    const t = await dial(false);
+    expect(t.ua.calls).toHaveLength(1);
+    const headers = t.ua.calls[0].options.extraHeaders || [];
+    expect(headers.join(" ")).not.toMatch(/X-VH-Record/i);
   });
 
-  it("does not ask for recordings before login", async () => {
-    // Regression: the panel requested recordings on boot, before any session
-    // existed, and showed an error on every fresh open.
-    const fetch = routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } });
-    await boot({ iparams: SETTINGS, fetch });
-    await flush();
-    expect(fetch.mock.calls.some(c => String(c[0]).includes("/recordings/"))).toBe(false);
+  it("sends X-VH-Record when the box is ticked", async () => {
+    const t = await dial(true);
+    const headers = t.ua.calls[0].options.extraHeaders || [];
+    expect(headers).toContain("X-VH-Record: true");
   });
 
-  it("refreshes on demand", async () => {
-    const fetch = base();
-    const t = await boot({ iparams: SETTINGS, fetch });
-    await flush();
-    const before = fetch.mock.calls.filter(c => String(c[0]).includes("/recordings/")).length;
+  it("applies the same choice to an inbound call it joins", async () => {
+    // Inbound is answered by placing an outgoing leg into the caller's room, so
+    // the box has to reach that leg too or it would only work in one direction.
+    const offer = { pending: true, from: "+919999900001", room: "fdroom1", callUuid: "u-1" };
+    const fetch = vi.fn(async (url, options = {}) => {
+      const u = String(url);
+      const json =
+        u.includes("/agent/") ? AGENT_OK.body
+        : u.includes("/inbound-pending/") ? offer
+        : u.includes("/inbound-accept") ? { ok: true, room: offer.room, from: offer.from }
+        : {};
+      return { ok: true, status: 200, json: async () => json };
+    });
 
-    t.el("refresh-history-btn").click();
-    await flush();
-    const after = fetch.mock.calls.filter(c => String(c[0]).includes("/recordings/")).length;
-    expect(after).toBe(before + 1);
+    vi.useFakeTimers();
+    try {
+      const t = await boot({ iparams: SETTINGS, fetch });
+      t.ua.emit("registered");
+      t.el("record-call").checked = true;
+      await vi.advanceTimersByTimeAsync(2100);
+      await flush();
+      t.el("acceptbtn").click();
+      await flush();
+
+      expect(t.ua.calls[0].options.extraHeaders).toContain("X-VH-Record: true");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("says so when there are none", async () => {
-    const t = await boot({ iparams: SETTINGS, fetch: base({ "/recordings/": { body: { objects: [] } } }) });
-    await flush();
-    expect(t.el("call-history-list").textContent).toMatch(/no recordings/i);
-  });
-
-  it("reports a failure to load", async () => {
-    const t = await boot({ iparams: SETTINGS, fetch: base({ "/recordings/": new Error("ECONNREFUSED") }) });
-    await flush();
-    expect(t.el("call-history-list").textContent).toMatch(/could not load/i);
-  });
-
-  it("plays a recording through the backend, url-encoding the id", async () => {
+  it("no longer lists recordings in the panel", async () => {
+    // They live in the Vobiz Console. Mirroring them here meant streaming call
+    // audio back out through the calling backend.
     const t = await boot({ iparams: SETTINGS, fetch: base() });
     await flush();
-
-    const audio = t.el("vobiz-playback-audio");
-    // jsdom has no media stack; play() would throw "not implemented".
-    audio.play = vi.fn(() => Promise.resolve());
-
-    const playBtn = t.el("call-history-list").querySelector("button");
-    expect(playBtn).toBeTruthy();
-    playBtn.click();
-
-    expect(audio.src).toContain("/recording-audio/priya/rec_a");
+    expect(t.el("call-history-list")).toBeNull();
+    expect(t.el("vobiz-playback-audio")).toBeNull();
   });
 });
 
@@ -162,7 +165,7 @@ describe("call progress", () => {
   // The browser is the A leg: it sends the INVITE itself, so progress comes
   // from the JsSIP session rather than from polling the backend.
   async function dial() {
-    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS });
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN });
     const t = await boot({ iparams: SETTINGS, fetch });
     await vi.advanceTimersByTimeAsync(0);
     t.ua.emit("registered");
@@ -203,7 +206,7 @@ describe("call progress", () => {
     // The first line of defence against dialling with nowhere to put the audio.
     // The in-placeCall guard behind it is covered in app.test.js, which reaches
     // placeCall through cti.triggerDialer rather than the button.
-    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS });
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN });
     const t = await boot({ iparams: SETTINGS, fetch });
     await vi.advanceTimersByTimeAsync(0);
 
@@ -247,7 +250,7 @@ describe("defensive guards", () => {
   it("survives a hangup that the SIP stack rejects", async () => {
     const t = await boot({
       iparams: SETTINGS,
-      fetch: routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS }),
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN }),
     });
     await flush();
     t.ua.emit("registered");
