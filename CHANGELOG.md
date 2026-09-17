@@ -6,6 +6,18 @@ All notable changes to this app are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **A second way to sign in: the endpoint's own SIP credentials.** Auth ID and
+  Auth Token are account-wide — they authorise listing every number on the
+  account, and the panel exchanges them for a SIP identity the backend looks up
+  and hands back. **SIP direct** takes the endpoint's username and password
+  instead, from Console → Voice → Endpoints, and never asks the backend for a
+  credential. Its caller ID is typed rather than picked, because listing the
+  account's numbers is exactly what those credentials do not authorise.
+- **Per-call recording.** A **Record this call** checkbox next to the number.
+  The choice travels on the call as an `X-VH-Record` SIP header rather than
+  being stored anywhere, so the backend emits `<Record>` only when asked.
+  Unticked means nothing recorded and nothing billed for recording. It governs
+  inbound too, starting when the agent accepts — so hold time is not in the file.
 - **Inbound calls ring, and wait to be answered.** A banner shows the caller's
   number with **Accept** and **Decline**, a ringtone plays, and nothing is
   answered without a click. Enter and Escape are bound to the same two actions.
@@ -21,6 +33,20 @@ All notable changes to this app are documented here. This project follows
 - The inbound offer is polled every second rather than every two.
 - `README.md` no longer says inbound does not work, and documents why it is
   slower than outbound.
+
+### Removed
+- **The recordings list.** The Vobiz Console already lists recordings, and
+  mirroring it meant the calling backend streamed call audio to anyone who could
+  reach it — see [ISSUES.md #4](ISSUES.md#issue-4--the-backend-contract-has-security-gaps-that-are-easy-to-implement-wrongly).
+
+### Fixed
+- A rejected SIP sign-in said nothing. The form kept reading "Signing in as …"
+  while the real answer went to the panel status, so a wrong password looked
+  like a hang.
+- A replaced SIP connection could still write to the panel. `stop()` closes the
+  socket asynchronously, so a discarded connection reported its own
+  disconnection over the live one's status — and could raise an incoming-call
+  banner for a call the panel was no longer able to answer.
 
 ### Known issues
 - The caller waits through the agent's browser setting up its own leg —

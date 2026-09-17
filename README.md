@@ -100,8 +100,25 @@ exact menu paths. In short:
 
 ## Using it
 
-**Log in** with your Vobiz Auth ID and Auth Token, then pick the number to call
-from. These are entered by the agent at runtime and are not stored by the app.
+**Sign in**, either way:
+
+| | **Vobiz account** | **SIP direct** |
+|---|---|---|
+| You enter | Auth ID and Auth Token | The endpoint's SIP username and password |
+| Caller ID | Picked from your account's numbers | Typed |
+| The backend | Tells the panel which SIP identity it is | Is not involved in signing in at all |
+| Reaches | Everything on the account | That one endpoint |
+
+Both are entered by the agent at runtime. **SIP direct** credentials come from
+[Console](https://console.vobiz.ai) → Voice → Endpoints, and are the better
+choice when an agent only ever works one endpoint: nothing account-wide is
+handed to the browser, and the backend never serves a SIP password — which is
+half of [Issue #4](ISSUES.md#issue-4--the-backend-contract-has-security-gaps-that-are-easy-to-implement-wrongly).
+
+Its caller ID is typed rather than picked because listing the account's numbers
+is precisely what endpoint credentials do not authorise. It is required: carriers
+reject a call with no CLI, and that failure says nothing about a missing caller
+ID, so the panel refuses at sign-in instead.
 
 **Make a call** by typing a number and clicking **Call**, or by clicking any
 phone number in Freshdesk — the panel opens and dials automatically.
@@ -121,7 +138,15 @@ When a call arrives the panel rings and shows the caller's number, with
 **Accept** and **Decline**. Accept connects you; Decline sends the caller to
 voicemail. Enter and Escape do the same thing.
 
-**Play recordings** from the Call Recordings section.
+**Record a call** by ticking **Record this call** before dialling. It applies to
+an inbound call too — recording starts when you accept, so the caller's time on
+hold is not in the file. Leave it clear and nothing is recorded, and nothing is
+billed for recording.
+
+**Play them back in the Vobiz Console**, under Voice → Recordings. The panel
+does not list them: it would only be mirroring what the Console already holds,
+and serving the audio meant the calling backend could hand call recordings to
+anyone able to reach it.
 
 ### Inbound is slower than outbound, and why
 
