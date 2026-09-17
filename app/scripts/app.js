@@ -26,6 +26,20 @@ let currentRTCSession = null;
 // which rings the customer and then connects them to silence.
 let accountReady = false;
 let sipRegistered = false;
+// True only between an inbound leg arriving and it being accepted, declined or
+// withdrawn. The keyboard shortcuts are gated on this.
+let incomingPending = false;
+/**
+ * The caller waiting in a conference room, when there is one.
+ *
+ * Set by the backend poll rather than by a SIP INVITE, because Vobiz cannot
+ * deliver an INVITE into a browser — see joinRoom, and the long note in the
+ * backend. Null whenever nothing is ringing.
+ */
+let incomingOffer = null;
+let inboundPollTimer = null;
+/** A microphone taken while the banner rings, so Accept does not wait for one. */
+let warmMicStream = null;
 
 /**
  * Every backend call goes through here.
@@ -74,6 +88,20 @@ async function init() {
   document.getElementById("setup-inbound-btn").addEventListener("click", setupInboundCalling);
   document.getElementById("refresh-history-btn").addEventListener("click", loadCallHistory);
   document.getElementById("hangupbtn").addEventListener("click", hangUp);
+  document.getElementById("acceptbtn").addEventListener("click", acceptCall);
+  document.getElementById("declinebtn").addEventListener("click", declineCall);
+
+  // Enter and Escape while a call is ringing. An agent already reaching for the
+  // keyboard should not have to find the mouse to pick up.
+  // Gated on incomingPending rather than on the banner's hidden attribute: the
+  // listener is on document, so it sees every keystroke in the panel, and
+  // reading state back off the DOM makes it act on a banner some other code
+  // put there.
+  document.addEventListener("keydown", e => {
+    if (!incomingPending) return;
+    if (e.key === "Enter") { e.preventDefault(); acceptCall(); }
+    else if (e.key === "Escape") { e.preventDefault(); declineCall(); }
+  });
 
   // Leave the registrar cleanly. Without this the binding lingers until it
   // expires (JsSIP defaults to 600s) and inbound calls route to a dead leg
@@ -138,6 +166,8 @@ function refreshDialState() {
 function setSipRegistered(isRegistered) {
   sipRegistered = Boolean(isRegistered);
   refreshDialState();
+  // Only worth asking about callers once the panel could actually take one.
+  if (sipRegistered) startInboundPolling();
 }
 
 function hangUp() {
@@ -146,6 +176,335 @@ function hangUp() {
     currentRTCSession.terminate();
   } catch (err) {
     console.warn("[Vobiz] hangup failed:", err);
+  }
+}
+
+/** === Incoming calls ===
+ *
+ * An inbound leg is NOT answered on arrival. answer() reaches for the
+ * microphone, and a browser treats a microphone request that no one asked for
+ * differently from one that follows a click: without a user gesture it can be
+ * stalled or refused outright, particularly inside an embedded frame like this
+ * one. The call then rings until the caller gives up, and the CDR shows a leg
+ * billed 0s with nothing to explain it.
+ *
+ * Accept is that gesture. It is also simply what an agent expects — the panel
+ * used to pick up by itself, with no ring, no caller shown and no way to
+ * refuse.
+ */
+function callerOf(session) {
+  try {
+    const uri = session && session.remote_identity && session.remote_identity.uri;
+    const user = uri && uri.user;
+    if (user) return String(user).startsWith("+") ? String(user) : `+${user}`;
+    return (session && session.remote_identity && session.remote_identity.display_name) || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function showIncoming(from) {
+  const banner = document.getElementById("incoming");
+  const fromEl = document.getElementById("incoming-from");
+  if (fromEl) fromEl.textContent = from;
+  if (banner) banner.hidden = false;
+}
+
+/** Clear the banner and every trace of the call it belonged to. */
+function endIncoming(status) {
+  incomingPending = false;
+  incomingOffer = null;
+  // Nothing is going to use it now, and a held microphone keeps the browser's
+  // recording indicator lit for a call that is over.
+  releaseWarmMic();
+  stopRingtone();
+  const banner = document.getElementById("incoming");
+  if (banner) banner.hidden = true;
+  setHangupVisible(false);
+  currentRTCSession = null;
+  if (status) setStatus(status);
+}
+
+/**
+ * Join the conference the caller is waiting in.
+ *
+ * An ordinary outgoing call, the same direction the panel already uses for
+ * every other call. Going out rather than being rung is the entire point:
+ * Vobiz cannot deliver an INVITE into a browser (see the note in the backend),
+ * but a browser calling out works, so inbound is built from an outgoing leg.
+ *
+ * The number dialled is the CALLER's, and it is never actually rung. Vobiz
+ * resolves every destination through its own routing service before anything
+ * else, and a conference room name is not something it can resolve:
+ *
+ *   GET vapor.vobiz.ai/api/v1/IncomingRoute/?destination=fdf5434599...
+ *     -> 500, retried, then 486 Busy and the leg is dropped
+ *
+ * A phone number resolves, so that is what goes on the wire. The backend
+ * recognises the agent has an accepted call waiting and answers with
+ * <Conference> in place of <Dial>, which is what stops the caller being rung
+ * a second time.
+ */
+function joinRoom(room, from) {
+  const numEl = document.getElementById("callnum");
+  const caller = from || "";
+  const target = String(caller).replace(/[^\d+]/g, "");
+
+  if (numEl) {
+    numEl.textContent = `Connecting to ${caller || "caller"}…`;
+    numEl.hidden = false;
+  }
+
+  // Without a number there is nothing Vobiz will route, and dialling the room
+  // name instead is the failure this function exists to avoid.
+  if (!target) {
+    if (numEl) numEl.textContent = "Could not connect — the caller's number is unknown";
+    setStatus("Ready");
+    return;
+  }
+
+  // Hand over the microphone taken while the banner rang, if there is one, so
+  // call() does not stop to ask for one. Ownership passes to JsSIP here — it
+  // stops the tracks when the call ends — so the reference is dropped rather
+  // than released.
+  const warmed = warmMicStream;
+  warmMicStream = null;
+
+  try {
+    const session = vobizUA.call(`sip:${target}@registrar.vobiz.ai`, {
+      ...(warmed ? { mediaStream: warmed } : { mediaConstraints: { audio: true, video: false } }),
+      // Same reason as every other leg: without STUN the offer carries only
+      // host candidates and the call is torn down before any audio flows.
+      pcConfig: { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] },
+      sessionTimersExpires: 300,
+    });
+    currentRTCSession = session;
+    attachRemoteAudio(session);
+    setHangupVisible(true);
+
+    session.on("confirmed", () => {
+      if (numEl) numEl.textContent = `On a call with ${caller}`;
+      setStatus("On a call");
+    });
+    session.on("failed", e => {
+      const cause = (e && e.cause) || "unknown";
+      if (numEl) numEl.textContent = `Could not connect — ${cause}`;
+      currentRTCSession = null;
+      setHangupVisible(false);
+      setStatus("Ready");
+    });
+    session.on("ended", () => {
+      if (numEl) {
+        numEl.textContent = "Call ended";
+        setTimeout(() => { numEl.hidden = true; }, 4000);
+      }
+      currentRTCSession = null;
+      setHangupVisible(false);
+      setStatus("Ready");
+    });
+  } catch (err) {
+    console.error("[Vobiz] could not join the room:", err);
+    if (numEl) numEl.textContent = `Could not connect — ${err.message}`;
+    setStatus("Ready");
+  }
+}
+
+async function acceptCall() {
+  // Two shapes of incoming call arrive here. `incomingOffer` is the conference
+  // bridge, which is what actually happens today. The JsSIP branch below is the
+  // direct <Dial><User> path: it costs nothing to keep and starts working by
+  // itself the day Vobiz fixes its router.
+  if (incomingOffer) {
+    const offer = incomingOffer;
+    incomingOffer = null;
+    incomingPending = false;
+    stopRingtone();
+    const banner = document.getElementById("incoming");
+    if (banner) banner.hidden = true;
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("no microphone available in this frame");
+      }
+      const res = await backendFetch(`${BACKEND_URL}/inbound-accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: AGENT_ID }),
+      });
+      const data = await res.json();
+      // The caller may have hung up in the second it took to click.
+      if (!data.ok) throw new Error(data.reason || "the call is no longer ringing");
+      joinRoom(data.room, data.from || offer.from);
+    } catch (err) {
+      console.error("[Vobiz] accept failed:", err);
+      endIncoming(`Could not accept — ${err.message}`);
+    }
+    return;
+  }
+
+  if (!currentRTCSession) return;
+  incomingPending = false;
+  stopRingtone();
+  const banner = document.getElementById("incoming");
+  if (banner) banner.hidden = true;
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("navigator.mediaDevices is unavailable — this frame is not a secure context");
+    }
+    attachRemoteAudio(currentRTCSession);
+    // pcConfig matters here exactly as much as it does on an outbound call:
+    // without STUN the answer carries host-only candidates and the leg is torn
+    // down without connecting, leaving a leg billed 0s and no explanation.
+    currentRTCSession.answer({
+      mediaConstraints: { audio: true, video: false },
+      pcConfig: { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] },
+      sessionTimersExpires: 300,
+    });
+    setHangupVisible(true);
+    setStatus("On a call");
+  } catch (err) {
+    console.error("[Vobiz] could not answer the incoming leg:", err);
+    setStatus(`Could not answer — ${err.name === "NotAllowedError"
+      ? "microphone permission was refused for this frame"
+      : err.message}`);
+    try { currentRTCSession.terminate(); } catch { /* already gone */ }
+    endIncoming();
+  }
+}
+
+async function declineCall() {
+  if (incomingOffer) {
+    incomingOffer = null;
+    incomingPending = false;
+    // Declining ends the room, which drops the caller out of <Conference> and
+    // on to the voicemail that follows it — they get to leave a message rather
+    // than simply being cut off.
+    try {
+      await backendFetch(`${BACKEND_URL}/inbound-decline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: AGENT_ID }),
+      });
+    } catch (err) {
+      console.warn("[Vobiz] decline failed:", err);
+    }
+    endIncoming("Ready");
+    return;
+  }
+
+  if (!currentRTCSession) return;
+  incomingPending = false;
+  try {
+    currentRTCSession.terminate();
+  } catch (err) {
+    console.warn("[Vobiz] decline failed:", err);
+  }
+  endIncoming();
+}
+
+/**
+ * Ask the backend whether a caller is waiting.
+ *
+ * Polling rather than a pushed SIP INVITE because the INVITE is exactly what
+ * cannot be delivered. Runs only while registered and only while no call is in
+ * progress, so an established call is never interrupted by a stale offer.
+ */
+async function pollInbound() {
+  if (!BACKEND_URL || !AGENT_ID) return;
+  if (!sipRegistered || currentRTCSession || incomingPending) return;
+  try {
+    const res = await backendFetch(`${BACKEND_URL}/inbound-pending/${encodeURIComponent(AGENT_ID)}`);
+    const data = await res.json();
+    if (!data || !data.pending) return;
+    incomingOffer = { room: data.room, from: data.from, callUuid: data.callUuid };
+    incomingPending = true;
+    showIncoming(data.from || "unknown");
+    startRingtone();
+    // Not awaited: the banner and ringtone must not wait on a permission prompt.
+    warmMic();
+  } catch {
+    // The tunnel drops, the laptop sleeps, the backend restarts. None of that
+    // is worth a message in the panel — the next tick simply tries again.
+  }
+}
+
+function startInboundPolling() {
+  if (inboundPollTimer) return;
+  // Every second, not every two. The caller is listening to hold music for the
+  // whole of this, and on a measured call 45s passed between them parking and
+  // the agent's leg reaching Vobiz — they hung up 1.5s after it arrived. Every
+  // part of that delay this panel owns is worth removing.
+  inboundPollTimer = setInterval(pollInbound, 1000);
+}
+
+/**
+ * Take the microphone while the banner is still ringing.
+ *
+ * JsSIP asks for the microphone inside call(), and only starts gathering ICE
+ * once it has one — so that cost lands after the agent clicks, while the caller
+ * waits. Acquiring it up front moves it into the ringing window, and the stream
+ * is handed to call() directly so it is not requested twice.
+ *
+ * Best-effort: if it fails, joinRoom falls back to asking for the microphone
+ * the normal way and the call still connects, just a little slower.
+ */
+async function warmMic() {
+  if (warmMicStream) return;
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    warmMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (err) {
+    console.warn("[Vobiz] could not pre-acquire the microphone:", err && err.name);
+    warmMicStream = null;
+  }
+}
+
+/** Let the microphone go when it is no longer needed for a pending offer. */
+function releaseWarmMic() {
+  if (!warmMicStream) return;
+  try {
+    warmMicStream.getTracks().forEach(t => t.stop());
+  } catch { /* already stopped */ }
+  warmMicStream = null;
+}
+
+/** A ringtone, synthesised — nothing to ship and nothing to fail to load. */
+let ringCtx = null;
+let ringTimer = null;
+
+function startRingtone() {
+  stopRingtone();
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    ringCtx = new Ctx();
+    const beep = () => {
+      if (!ringCtx) return;
+      const osc = ringCtx.createOscillator();
+      const gain = ringCtx.createGain();
+      osc.frequency.value = 440;
+      gain.gain.setValueAtTime(0.0001, ringCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.12, ringCtx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ringCtx.currentTime + 0.9);
+      osc.connect(gain).connect(ringCtx.destination);
+      osc.start();
+      osc.stop(ringCtx.currentTime + 0.95);
+    };
+    beep();
+    ringTimer = setInterval(beep, 2000);
+  } catch (err) {
+    // A silent panel is worse than no ringtone, but not worth failing the call
+    // over — the banner is still on screen either way.
+    console.warn("[Vobiz] could not start the ringtone:", err);
+  }
+}
+
+function stopRingtone() {
+  if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+  if (ringCtx) {
+    try { ringCtx.close(); } catch { /* already closed */ }
+    ringCtx = null;
   }
 }
 
@@ -454,50 +813,20 @@ async function initVobizSip() {
   vobizUA.on("newRTCSession", data => {
     if (data.originator !== "remote") return;
 
-    setStatus("Call ringing in…");
     currentRTCSession = data.session;
-    attachRemoteAudio(currentRTCSession);
-    setHangupVisible(true);
+    const caller = callerOf(currentRTCSession);
+
+    setStatus(`Incoming call from ${caller}`);
+    incomingPending = true;
+    showIncoming(caller);
+    startRingtone();
 
     currentRTCSession.on("confirmed", () => setStatus("On a call"));
-    currentRTCSession.on("ended", () => {
-      setStatus(`Ready — registered as ${agent.displayName}`);
-      currentRTCSession = null;
-      setHangupVisible(false);
-    });
-    currentRTCSession.on("failed", () => {
-      setStatus(`Ready — registered as ${agent.displayName}`);
-      currentRTCSession = null;
-      setHangupVisible(false);
-    });
-
-    // answer() reaches for the microphone. Anything that throws here — no
-    // getUserMedia (the iframe is not a secure context), or the Freshdesk
-    // iframe not delegating microphone permission — used to abort this handler
-    // silently: the browser never picks up, Vobiz rings until it gives up, and
-    // the dial result reads "ring=true" with no B leg and no explanation
-    // anywhere. Say what happened instead.
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("navigator.mediaDevices is unavailable — this frame is not a secure context");
-      }
-      // pcConfig matters here exactly as much as it does on an outbound call:
-      // without STUN the answer carries host-only candidates and the leg is torn
-      // down without connecting, leaving a B leg billed 0s and no explanation.
-      currentRTCSession.answer({
-        mediaConstraints: { audio: true, video: false },
-        pcConfig: { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] },
-        sessionTimersExpires: 300,
-      });
-    } catch (err) {
-      console.error("[Vobiz] could not answer the incoming leg:", err);
-      setStatus(`Could not answer — ${err.name === "NotAllowedError"
-        ? "microphone permission was refused for this frame"
-        : err.message}`);
-      try { currentRTCSession.terminate(); } catch { /* already gone */ }
-      currentRTCSession = null;
-      setHangupVisible(false);
-    }
+    // The caller can give up, or Vobiz can time the leg out, while the banner
+    // is still on screen. Clear it either way rather than leaving an Accept
+    // button that answers a call which no longer exists.
+    currentRTCSession.on("ended", () => endIncoming(`Ready — registered as ${agent.displayName}`));
+    currentRTCSession.on("failed", () => endIncoming(`Ready — registered as ${agent.displayName}`));
   });
 
   vobizUA.start();

@@ -8,16 +8,25 @@ This is a **custom app**. You install it on your own Freshdesk account — there
 is no Marketplace approval to wait for, and it is usually live within about
 thirty minutes of upload.
 
-> ## Outbound calling works. Inbound does not yet.
+> ## Both directions work. Inbound takes an unusual route, on purpose.
 >
 > **Outbound is verified end to end** — the panel registers, dials, and carries
 > two-way audio in the browser, with both legs billed on the Vobiz CDR.
 >
-> **Inbound (PSTN → browser) is blocked platform-side.** Routing a call *into* a
-> registered WebRTC endpoint with `<Dial><User>` fails: Vobiz builds an
-> unparseable gateway URI and drops its own INVITE. The caller hears ringback and
-> nothing else. This affects other accounts and Vobiz's own SDK, not just this
-> app — see [ISSUES.md](ISSUES.md) for the evidence.
+> **Inbound is verified end to end too, but it does not ring the browser.** It
+> cannot: routing a call *into* a registered WebRTC endpoint with `<Dial><User>`
+> is broken platform-side, on other accounts and on Vobiz's own SDK, and nothing
+> configurable on this side avoids it — see
+> [ISSUES.md #1](ISSUES.md#issue-1--inbound-routing-into-a-webrtc-endpoint-is-blocked-platform-side).
+>
+> So an incoming caller is parked in a **conference room** and the panel is told
+> about them out of band. Accepting places an ordinary **outgoing** call into
+> that room — the direction that does work — and the two legs meet there. The
+> agent sees a normal ringing panel; the mechanics underneath are inverted.
+>
+> One consequence worth knowing before you test: the caller waits on hold for
+> the whole of the agent's own call setup, which is slower than it looks. See
+> [Inbound is slower than outbound](#inbound-is-slower-than-outbound-and-why).
 >
 > Three client settings are **required** and none of them are documented by
 > Vobiz. Without them calls fail with errors that point nowhere near the cause:
@@ -104,9 +113,40 @@ while your browser is bridged in; this is expected, and
 why.
 
 **Receive calls** by clicking **Enable inbound calls to this panel** once. Keep
-the Freshdesk tab open.
+the Freshdesk tab open, and **only one tab** — several tabs register the same SIP
+identity and evict each other, so a call can ring a tab that is no longer the one
+Vobiz will reach.
+
+When a call arrives the panel rings and shows the caller's number, with
+**Accept** and **Decline**. Accept connects you; Decline sends the caller to
+voicemail. Enter and Escape do the same thing.
 
 **Play recordings** from the Call Recordings section.
+
+### Inbound is slower than outbound, and why
+
+The caller is on hold from the moment they are parked until your leg reaches
+Vobiz — and your leg is not sent the instant you click **Accept**. The browser
+first takes the microphone, then gathers its ICE candidates, and only then does
+JsSIP send the INVITE. On a measured call that took **40 seconds** after the
+click, all of it inside the browser: Vobiz's logs show no activity at all in
+that window.
+
+Two things reduce it, both already in the panel: the offer is polled every
+second rather than every two, and the microphone is acquired **while the banner
+is still ringing** so `call()` does not stop to ask for one. What remains is ICE
+gathering, which this app cannot cap — JsSIP exposes no gathering timeout.
+
+Practical consequences:
+
+- **Click Accept promptly.** Every second of hesitation is a second the caller
+  spends on hold.
+- **A machine with many virtual network adapters gathers ICE more slowly** —
+  VPNs, Docker, VirtualBox and similar each add interfaces the browser has to
+  enumerate. Worth checking if the delay is consistently long.
+- `INBOUND_RING_SECONDS` on the backend must stay **well above** the worst
+  observed setup time, or callers are sent to voicemail while the agent is
+  already on the way.
 
 ## Run it locally
 
@@ -238,13 +278,15 @@ npx esbuild entry.js --bundle --minify --format=iife \
 
 Honest list, so nobody is surprised. Full detail in **[ISSUES.md](ISSUES.md)**.
 
-- **Inbound calls (PSTN → browser) do not connect.** Vobiz drops its own INVITE
-  when routing into a registered WebRTC endpoint. Platform-side, not fixable
-  here. Outbound is unaffected.
+- **Inbound reaches the agent through a conference, not by ringing the browser.**
+  Vobiz cannot route a call into a registered WebRTC endpoint, so the caller is
+  parked and the panel dials in to meet them. It works, and the agent cannot
+  tell, but it means the caller waits through the agent's own call setup —
+  see [Inbound is slower than outbound](#inbound-is-slower-than-outbound-and-why).
+  The underlying platform defect is still open:
   [ISSUES.md #1](ISSUES.md#issue-1--inbound-routing-into-a-webrtc-endpoint-is-blocked-platform-side).
-- **Inbound calls auto-answer**, with no ring, no caller ID and no
-  Accept/Decline.
-  [ISSUES.md #5](ISSUES.md#issue-5--inbound-calls-auto-answer-with-no-popup).
+- **A second caller while one is already ringing goes straight to voicemail.**
+  One offer per agent at a time; there is no queue.
 - **The panel is a softphone, not a full CTI integration.** It does not create
   tickets, log calls as ticket notes, pop the contact record on an inbound call,
   or attach recordings to a ticket. Click-to-call works; the rest is on the

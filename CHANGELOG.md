@@ -3,6 +3,31 @@
 All notable changes to this app are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Inbound calls ring, and wait to be answered.** A banner shows the caller's
+  number with **Accept** and **Decline**, a ringtone plays, and nothing is
+  answered without a click. Enter and Escape are bound to the same two actions.
+  Declining sends the caller to voicemail rather than cutting them off.
+- **Inbound calls connect at all**, by a different route. VoBiz cannot deliver a
+  call into a registered WebRTC endpoint, so the caller is parked in a
+  `<Conference>` and the panel dials *into* that room to meet them — outgoing
+  being the direction that works. `<Dial><User>` is no longer used for inbound.
+- The microphone is taken **while the banner is ringing** and handed to `call()`,
+  so the caller is not held through `getUserMedia` after the agent clicks.
+
+### Changed
+- The inbound offer is polled every second rather than every two.
+- `README.md` no longer says inbound does not work, and documents why it is
+  slower than outbound.
+
+### Known issues
+- The caller waits through the agent's browser setting up its own leg —
+  **40 s** on a measured call, almost all of it ICE gathering, which JsSIP gives
+  no way to cap. See [ISSUES.md #7](ISSUES.md#issue-7--the-caller-waits-through-the-agents-own-call-setup).
+- One inbound offer per agent at a time. A second caller goes to voicemail.
+
 ## [1.0.0] — 2026-09-14
 
 First public release.
