@@ -86,6 +86,9 @@ async function init() {
   document.getElementById("vobiz-login-btn").addEventListener("click", vobizLogin);
   document.getElementById("vobiz-number-select").addEventListener("change", vobizSelectNumber);
   document.getElementById("setup-inbound-btn").addEventListener("click", setupInboundCalling);
+  document.getElementById("mode-account-tab").addEventListener("click", () => setAuthMode("account"));
+  document.getElementById("mode-sip-tab").addEventListener("click", () => setAuthMode("sip"));
+  document.getElementById("sip-connect-btn").addEventListener("click", sipDirectConnect);
   document.getElementById("hangupbtn").addEventListener("click", hangUp);
   document.getElementById("acceptbtn").addEventListener("click", acceptCall);
   document.getElementById("declinebtn").addEventListener("click", declineCall);
@@ -109,8 +112,14 @@ async function init() {
     try { if (vobizUA) vobizUA.stop(); } catch { /* nothing useful to do on the way out */ }
   });
 
-  initVobizSip();
-  restoreVobizSession();
+  restoreAuthMode();
+  // Account mode registers on its own, because the backend already knows which
+  // identity this installation is. SIP direct cannot: nobody has typed the
+  // credentials yet, so it waits for Connect (or restores a remembered sign-in).
+  if (authMode !== "sip") {
+    initVobizSip();
+    restoreVobizSession();
+  }
 }
 
 /** === Vobiz account login (Auth ID / Auth Token) ===
@@ -123,6 +132,125 @@ async function init() {
 function setLoginStatus(text) {
   const el = document.getElementById("vobiz-login-status");
   if (el) el.textContent = text;
+}
+
+/* ------------------------------------------------------------------ *
+ * Two ways in
+ *
+ * "account"  Auth ID and Auth Token. The backend decides which SIP
+ *            identity this installation is and hands it over, and it
+ *            can list the account's numbers so the caller ID is a
+ *            dropdown rather than something to be typed correctly.
+ *
+ * "sip"      The endpoint's own SIP username and password, typed here.
+ *            Nothing account-wide is involved, the backend is never
+ *            asked for credentials, and one agent signing in cannot
+ *            obtain another's. The caller ID has to be typed, because
+ *            listing the account's numbers is exactly the thing these
+ *            credentials do not authorise.
+ *
+ * Worth being plain about the trade: an endpoint password in the browser
+ * is not a new exposure — the account path already sends one here, from
+ * an endpoint that serves it to anyone who can reach the backend. This
+ * path removes that endpoint from the picture rather than adding a risk.
+ * ------------------------------------------------------------------ */
+
+const AUTH_MODE_KEY = "vobiz.authMode";
+const SIP_CREDS_KEY = "vobiz.sipDirect";
+let authMode = "account";
+
+/** localStorage is unavailable in a private window and throws rather than
+ *  returning null, and losing a saved username is never worth a broken panel. */
+function readStore(key) {
+  try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
+}
+function writeStore(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* nothing to do; the panel works without it */ }
+}
+
+function setAuthMode(mode) {
+  authMode = mode === "sip" ? "sip" : "account";
+  writeStore(AUTH_MODE_KEY, authMode);
+
+  const isSip = authMode === "sip";
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !visible;
+  };
+  show("mode-account", !isSip);
+  show("mode-sip", isSip);
+  // Picking from the account's numbers needs account credentials, so in SIP
+  // mode the caller ID is a field inside that panel instead.
+  show("step-caller-id", !isSip);
+
+  const tab = (id, active) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("is-active", active);
+    el.setAttribute("aria-selected", String(active));
+  };
+  tab("mode-account-tab", !isSip);
+  tab("mode-sip-tab", isSip);
+}
+
+/** The caller ID to dial out as, when signed in as an endpoint. */
+function sipDirectCallerId() {
+  const el = document.getElementById("sip-caller-id");
+  return el ? el.value.trim() : "";
+}
+
+/**
+ * Sign in as one endpoint.
+ *
+ * Registration is all this does. There is no account session behind it, so the
+ * caller ID cannot come from the backend and travels on each call instead —
+ * see callHeaders().
+ */
+function sipDirectConnect() {
+  const username = (document.getElementById("sip-username") || {}).value?.trim() || "";
+  const password = (document.getElementById("sip-password") || {}).value || "";
+  const callerId = sipDirectCallerId();
+  const remember = Boolean((document.getElementById("sip-remember") || {}).checked);
+
+  if (!username || !password) {
+    setLoginStatus("Enter the endpoint's SIP username and password.");
+    return;
+  }
+  // Refused here rather than at dial time: carriers reject a call with no CLI,
+  // and the failure that produces says nothing about a missing caller ID.
+  if (!callerId) {
+    setLoginStatus("Enter the number to call from — carriers reject a call without one.");
+    return;
+  }
+
+  writeStore(SIP_CREDS_KEY, remember ? { username, password, callerId } : null);
+
+  // A bare username is the common case; the domain comes from the registrar.
+  const sipUser = username.includes("@") ? username : `${username}@registrar.vobiz.ai`;
+  setLoginStatus(`Signing in as ${username}…`);
+  // Nothing is verified against an account, so dialling is enabled on the
+  // strength of the registration alone — refreshDialState still requires it.
+  setDialEnabled(true);
+  startSipUA(sipUser, password, username);
+}
+
+/** Restore the last choice, and sign in again if the agent asked us to. */
+function restoreAuthMode() {
+  setAuthMode(readStore(AUTH_MODE_KEY) || "account");
+  if (authMode !== "sip") return;
+
+  const saved = readStore(SIP_CREDS_KEY);
+  if (!saved || !saved.username) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
+  set("sip-username", saved.username);
+  set("sip-password", saved.password);
+  set("sip-caller-id", saved.callerId);
+  const box = document.getElementById("sip-remember");
+  if (box) box.checked = true;
+  if (saved.password && saved.callerId) sipDirectConnect();
 }
 
 function renderNumberOptions(numbers, selected) {
@@ -644,6 +772,13 @@ function wantsRecording() {
 function callHeaders() {
   const headers = [];
   if (wantsRecording()) headers.push("X-VH-Record: true");
+  // Signed in as an endpoint, there is no account session for the backend to
+  // read a caller ID out of, so it travels on the call like everything else
+  // the agent chose. In account mode the backend already knows it.
+  if (authMode === "sip") {
+    const callerId = sipDirectCallerId().replace(/[^\d+]/g, "");
+    if (callerId) headers.push(`X-VH-Caller-ID: ${callerId}`);
+  }
   return headers;
 }
 
@@ -727,13 +862,31 @@ async function initVobizSip() {
     return;
   }
 
-  setStatus(`Connecting as ${agent.displayName}…`);
+  startSipUA(agent.sipUser, agent.sipPassword, agent.displayName);
+}
+
+/**
+ * Bring up the SIP stack for one identity.
+ *
+ * Shared by both ways in: the account sign-in above, which asks the backend
+ * which identity this installation is, and SIP-direct sign-in, where the agent
+ * types the endpoint's own credentials and the backend is never involved.
+ */
+function startSipUA(sipUser, sipPassword, displayName) {
+  setStatus(`Connecting as ${displayName}…`);
+
+  // Re-signing in replaces the previous registration rather than stacking a
+  // second one on the same identity; two live registrations evict each other.
+  if (vobizUA) {
+    try { vobizUA.stop(); } catch { /* already down */ }
+    vobizUA = null;
+  }
 
   const vobizSocket = new JsSIP.WebSocketInterface(REGISTRAR_URL);
   vobizUA = new JsSIP.UA({
     sockets: [vobizSocket],
-    uri: `sip:${agent.sipUser}`,
-    password: agent.sipPassword,
+    uri: `sip:${sipUser}`,
+    password: sipPassword,
     register: true,
     // No space in the User-Agent, deliberately.
     //
@@ -758,7 +911,7 @@ async function initVobizSip() {
   });
 
   vobizUA.on("registered", () => {
-    setStatus(`Ready — registered as ${agent.displayName}`);
+    setStatus(`Ready — registered as ${displayName}`);
     setSipRegistered(true);
   });
   vobizUA.on("registrationFailed", e => {
@@ -793,8 +946,8 @@ async function initVobizSip() {
     // The caller can give up, or Vobiz can time the leg out, while the banner
     // is still on screen. Clear it either way rather than leaving an Accept
     // button that answers a call which no longer exists.
-    currentRTCSession.on("ended", () => endIncoming(`Ready — registered as ${agent.displayName}`));
-    currentRTCSession.on("failed", () => endIncoming(`Ready — registered as ${agent.displayName}`));
+    currentRTCSession.on("ended", () => endIncoming(`Ready — registered as ${displayName}`));
+    currentRTCSession.on("failed", () => endIncoming(`Ready — registered as ${displayName}`));
   });
 
   vobizUA.start();

@@ -263,3 +263,164 @@ describe("defensive guards", () => {
     expect(() => t.el("hangupbtn").click()).not.toThrow();
   });
 });
+
+/*
+ * Two ways in. The account path asks the backend which SIP identity this
+ * installation is; the SIP-direct path is handed the endpoint's own
+ * credentials and never involves the backend at all — which is the point,
+ * since the backend serving SIP passwords is its own open issue.
+ */
+describe("signing in as an endpoint instead of an account", () => {
+  beforeEach(() => {
+    try { localStorage.clear(); } catch { /* private window */ }
+  });
+
+  const fillSip = (t, { user = "play123456789", pass = "s3cret", callerId = "+919876543210" } = {}) => {
+    t.el("sip-username").value = user;
+    t.el("sip-password").value = pass;
+    t.el("sip-caller-id").value = callerId;
+  };
+
+  it("defaults to the account tab and registers on its own", async () => {
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    // The backend is asked which identity to be, exactly as before.
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/agent/"))).toBe(true);
+    expect(t.el("mode-sip").hidden).toBe(true);
+  });
+
+  it("does not register on its own in SIP mode — nobody has typed anything yet", async () => {
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    t.el("mode-sip-tab").click();
+    await flush();
+
+    expect(t.el("mode-sip").hidden).toBe(false);
+    // Choosing from the account's numbers is the thing these credentials
+    // cannot authorise, so that step is hidden and a field replaces it.
+    expect(t.el("step-caller-id").hidden).toBe(true);
+  });
+
+  it("registers with the typed credentials, never asking the backend for any", async () => {
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+    const before = fetch.mock.calls.length;
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.ua.config.uri).toBe("sip:play123456789@registrar.vobiz.ai");
+    expect(t.ua.config.password).toBe("s3cret");
+    // No credential ever leaves the backend for this sign-in.
+    const after = fetch.mock.calls.slice(before).map(c => String(c[0]));
+    expect(after.some(u => u.includes("/agent/"))).toBe(false);
+    expect(after.some(u => u.includes("/login"))).toBe(false);
+  });
+
+  it("refuses to sign in without a caller ID, rather than failing at dial time", async () => {
+    // Carriers reject a call with no CLI, and that failure says nothing about
+    // a missing caller ID — so it is caught here, where it can be explained.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { callerId: "" });
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.text("vobiz-login-status")).toMatch(/number to call from/i);
+  });
+
+  it("carries the caller ID on the call, since no account session holds one", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+    t.el("sip-connect-btn").click();
+    await flush();
+    t.ua.emit("registered");
+
+    t.el("dialnumber").value = "+911140848108";
+    t.el("dialbtn").click();
+    await flush();
+
+    expect(t.ua.calls[0].options.extraHeaders).toContain("X-VH-Caller-ID: +919876543210");
+  });
+
+  it("only remembers the credentials when asked to", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+
+    t.el("sip-connect-btn").click();
+    await flush();
+    expect(localStorage.getItem("vobiz.sipDirect")).toBeNull();
+
+    t.el("sip-remember").checked = true;
+    t.el("sip-connect-btn").click();
+    await flush();
+    expect(JSON.parse(localStorage.getItem("vobiz.sipDirect")).username).toBe("play123456789");
+  });
+
+  it("refuses an incomplete sign-in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { pass: "" });
+    // Account mode already registered on boot, so the check is that no SECOND
+    // registration is attempted — not that none exists.
+    const before = t.JsSIP.UA.mock.calls.length;
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.text("vobiz-login-status")).toMatch(/username and password/i);
+    expect(t.JsSIP.UA.mock.calls.length).toBe(before);
+  });
+
+  it("does not append a second domain to a username that already has one", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { user: "play123@registrar.vobiz.ai" });
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.ua.config.uri).toBe("sip:play123@registrar.vobiz.ai");
+  });
+
+  it("signs back in on its own when the agent asked to be remembered", async () => {
+    localStorage.setItem("vobiz.authMode", JSON.stringify("sip"));
+    localStorage.setItem("vobiz.sipDirect", JSON.stringify({
+      username: "play999", password: "kept", callerId: "+919876543210",
+    }));
+
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+
+    expect(t.el("mode-sip").hidden).toBe(false);
+    expect(t.ua.config.uri).toBe("sip:play999@registrar.vobiz.ai");
+    // Still no backend involvement, even on a restored sign-in.
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/agent/"))).toBe(false);
+  });
+
+  it("survives localStorage throwing, as it does in a private window", async () => {
+    const real = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => { throw new Error("denied"); };
+    try {
+      const t = await boot({ iparams: SETTINGS, fetch: base() });
+      await flush();
+      expect(() => t.el("mode-sip-tab").click()).not.toThrow();
+      fillSip(t);
+      expect(() => t.el("sip-connect-btn").click()).not.toThrow();
+      await flush();
+      expect(t.ua.config.password).toBe("s3cret");
+    } finally {
+      Storage.prototype.setItem = real;
+    }
+  });
+});

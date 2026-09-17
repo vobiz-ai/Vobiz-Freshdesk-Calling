@@ -70,37 +70,96 @@
             <span class="step-num">1</span>
             <h2 class="step-title">Sign in to Vobiz</h2>
           </div>
-          <p class="step-help">
-            Your Auth ID and Auth Token are on the
-            <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
-            under <strong>API credentials</strong>. The Auth Token is not your login password.
-          </p>
+          <div class="tabs" role="tablist" aria-label="How to sign in">
+            <button type="button" id="mode-account-tab" class="tab is-active" role="tab" aria-selected="true" aria-controls="mode-account">
+              Vobiz account
+            </button>
+            <button type="button" id="mode-sip-tab" class="tab" role="tab" aria-selected="false" aria-controls="mode-sip">
+              SIP direct
+            </button>
+          </div>
 
-          <div id="vobiz-login-form">
+          <!-- Signing in with the account. The backend holds the SIP identity. -->
+          <div id="mode-account" role="tabpanel" aria-labelledby="mode-account-tab">
+            <p class="step-help">
+              Your Auth ID and Auth Token are on the
+              <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
+              under <strong>API credentials</strong>. The Auth Token is not your login password.
+            </p>
+
+            <div id="vobiz-login-form">
+              <div class="form-group">
+                <label class="field-label" for="vobiz-auth-id">Auth ID</label>
+                <input type="text" id="vobiz-auth-id" class="input input-mono" placeholder="MA_XXXXXXXX" autocomplete="off" />
+              </div>
+
+              <div class="form-group">
+                <label class="field-label" for="vobiz-auth-token">Auth Token</label>
+                <input type="password" id="vobiz-auth-token" class="input" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+              </div>
+
+              <button id="vobiz-login-btn" class="btn btn-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                  <path d="m10 17 5-5-5-5M15 12H3"/>
+                </svg>
+                Log in
+              </button>
+            </div>
+          </div>
+
+          <!-- Signing in as one endpoint. Nothing account-wide is needed, and the
+               backend never sees or hands out these credentials. -->
+          <div id="mode-sip" role="tabpanel" aria-labelledby="mode-sip-tab" hidden>
+            <p class="step-help">
+              The endpoint's own SIP credentials, from
+              <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console</a> &rarr;
+              Voice &rarr; Endpoints. Signs in as that one endpoint, without
+              account-wide credentials.
+            </p>
+
             <div class="form-group">
-              <label class="field-label" for="vobiz-auth-id">Auth ID</label>
-              <input type="text" id="vobiz-auth-id" class="input input-mono" placeholder="MA_XXXXXXXX" autocomplete="off" />
+              <label class="field-label" for="sip-username">SIP username</label>
+              <input type="text" id="sip-username" class="input input-mono" placeholder="playXXXXXXXXXXXX" autocomplete="off" />
             </div>
 
             <div class="form-group">
-              <label class="field-label" for="vobiz-auth-token">Auth Token</label>
-              <input type="password" id="vobiz-auth-token" class="input" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+              <label class="field-label" for="sip-password">SIP password</label>
+              <input type="password" id="sip-password" class="input" placeholder="Endpoint password" autocomplete="off" />
             </div>
 
-            <button id="vobiz-login-btn" class="btn btn-primary">
+            <div class="form-group">
+              <label class="field-label" for="sip-caller-id">Calling from</label>
+              <input type="tel" id="sip-caller-id" class="input input-mono" placeholder="+91XXXXXXXXXX" autocomplete="off" />
+              <p class="hint">
+                The number outgoing calls show. Carriers reject a call without a
+                real one, so this is required to dial out.
+              </p>
+            </div>
+
+            <label class="check-row" for="sip-remember">
+              <input type="checkbox" id="sip-remember" />
+              <span class="check-text">
+                Remember these
+                <span class="check-note">Kept in this browser, on this machine. Leave off on a shared computer.</span>
+              </span>
+            </label>
+
+            <button id="sip-connect-btn" class="btn btn-primary">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
                 <path d="m10 17 5-5-5-5M15 12H3"/>
               </svg>
-              Log in
+              Connect
             </button>
           </div>
 
           <p id="vobiz-login-status" class="hint">Not signed in.</p>
         </section>
 
-        <!-- Step 2 — caller ID -->
-        <section class="step">
+        <!-- Step 2 — caller ID. Account mode only: picking from the account's
+             numbers needs account credentials. SIP direct types one instead. -->
+        <section class="step" id="step-caller-id">
           <div class="step-head">
             <span class="step-num">2</span>
             <h2 class="step-title">Choose a caller ID</h2>
