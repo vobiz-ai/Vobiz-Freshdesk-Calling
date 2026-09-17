@@ -454,3 +454,55 @@ describe("signing in as an endpoint instead of an account", () => {
     }
   });
 });
+
+describe("a replaced SIP connection stops speaking for the panel", () => {
+  beforeEach(() => { try { localStorage.clear(); } catch { /* private window */ } });
+
+  it("ignores the outgoing UA's teardown events", async () => {
+    // stop() unregisters and closes the socket asynchronously, so the old UA
+    // fires `disconnected` AFTER its replacement has started connecting. Left
+    // attached, that handler reported a dead connection as the panel's state —
+    // "Disconnected from the registrar" on a sign-in that was working.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    const first = t.ua;
+
+    t.el("mode-sip-tab").click();
+    t.el("sip-username").value = "play123456789";
+    t.el("sip-password").value = "s3cret";
+    t.el("sip-caller-id").value = "+919876543210";
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    const second = t.ua;
+    expect(second).not.toBe(first);
+
+    // The superseded UA now says what it always said on the way out.
+    first.emit("disconnected");
+    first.emit("unregistered");
+    await flush();
+    expect(t.text("status-message")).not.toMatch(/disconnected/i);
+
+    // The live one is still able to report its own state.
+    second.emit("registered");
+    await flush();
+    expect(t.text("vobiz-login-status")).toMatch(/signed in as play123456789/i);
+  });
+
+  it("does not answer an inbound leg offered to a replaced connection", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    const first = t.ua;
+
+    t.el("mode-sip-tab").click();
+    t.el("sip-username").value = "play123456789";
+    t.el("sip-password").value = "s3cret";
+    t.el("sip-caller-id").value = "+919876543210";
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    first.emit("newRTCSession", { originator: "remote", session: new FakeSession() });
+    await flush();
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+});

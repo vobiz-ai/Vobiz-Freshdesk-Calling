@@ -877,13 +877,22 @@ function startSipUA(sipUser, sipPassword, displayName) {
 
   // Re-signing in replaces the previous registration rather than stacking a
   // second one on the same identity; two live registrations evict each other.
+  //
+  // Its listeners come off FIRST. stop() unregisters and closes the socket
+  // asynchronously, so the outgoing UA fires `unregistered` and `disconnected`
+  // a moment later — after this function has already started the replacement.
+  // Left attached, those handlers overwrite the new UA's status with
+  // "Disconnected from the registrar", describing a UA that is gone while the
+  // live one is connecting perfectly well.
   if (vobizUA) {
-    try { vobizUA.stop(); } catch { /* already down */ }
+    const previous = vobizUA;
     vobizUA = null;
+    try { previous.removeAllListeners(); } catch { /* not an emitter after all */ }
+    try { previous.stop(); } catch { /* already down */ }
   }
 
   const vobizSocket = new JsSIP.WebSocketInterface(REGISTRAR_URL);
-  vobizUA = new JsSIP.UA({
+  const ua = new JsSIP.UA({
     sockets: [vobizSocket],
     uri: `sip:${sipUser}`,
     password: sipPassword,
@@ -909,6 +918,13 @@ function startSipUA(sipUser, sipPassword, displayName) {
     // the supported configuration rather than a workaround.
     session_timers: false,
   });
+  vobizUA = ua;
+
+  // Belt and braces alongside removeAllListeners above: a handler only speaks
+  // for the UA it was attached to. Anything arriving from a superseded one —
+  // a late event, a retry already in flight — is about a connection nobody is
+  // using any more, and must not be reported as the state of this panel.
+  const isCurrent = () => vobizUA === ua;
 
   // Signing in with endpoint credentials puts the outcome next to the form the
   // agent just used. Without this the sign-in line sits on "Signing in as …"
@@ -917,12 +933,14 @@ function startSipUA(sipUser, sipPassword, displayName) {
   // password reads as a hang.
   const reportSignIn = text => { if (authMode === "sip") setLoginStatus(text); };
 
-  vobizUA.on("registered", () => {
+  ua.on("registered", () => {
+    if (!isCurrent()) return;
     setStatus(`Ready — registered as ${displayName}`);
     reportSignIn(`Signed in as ${displayName}.`);
     setSipRegistered(true);
   });
-  vobizUA.on("registrationFailed", e => {
+  ua.on("registrationFailed", e => {
+    if (!isCurrent()) return;
     const cause = (e && e.cause) || "unknown";
     setStatus(`Registration failed: ${cause}`);
     // JsSIP reports a rejected password as an authentication cause, which on
@@ -934,12 +952,14 @@ function startSipUA(sipUser, sipPassword, displayName) {
   });
   // Without these two, a dropped transport leaves the panel showing "Ready"
   // while the endpoint is uncallable.
-  vobizUA.on("unregistered", () => {
+  ua.on("unregistered", () => {
+    if (!isCurrent()) return;
     setStatus("Not registered — reconnecting…");
     reportSignIn("Signed out — reconnecting…");
     setSipRegistered(false);
   });
-  vobizUA.on("disconnected", () => {
+  ua.on("disconnected", () => {
+    if (!isCurrent()) return;
     setStatus("Disconnected from the registrar — reconnecting…");
     reportSignIn("Disconnected from the registrar — reconnecting…");
     setSipRegistered(false);
@@ -947,7 +967,8 @@ function startSipUA(sipUser, sipPassword, displayName) {
 
   // Vobiz dialing INTO this registered endpoint — the agent leg of a call
   // our backend originated via the REST API (outbound bridge).
-  vobizUA.on("newRTCSession", data => {
+  ua.on("newRTCSession", data => {
+    if (!isCurrent()) return;
     if (data.originator !== "remote") return;
 
     currentRTCSession = data.session;
@@ -966,7 +987,7 @@ function startSipUA(sipUser, sipPassword, displayName) {
     currentRTCSession.on("failed", () => endIncoming(`Ready — registered as ${displayName}`));
   });
 
-  vobizUA.start();
+  ua.start();
 
   // Surface a dead microphone path at startup rather than mid-call.
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
