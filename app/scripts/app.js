@@ -910,22 +910,38 @@ function startSipUA(sipUser, sipPassword, displayName) {
     session_timers: false,
   });
 
+  // Signing in with endpoint credentials puts the outcome next to the form the
+  // agent just used. Without this the sign-in line sits on "Signing in as …"
+  // for as long as the panel is open while the real answer — most often a
+  // rejected password — is reported somewhere else entirely, and a wrong
+  // password reads as a hang.
+  const reportSignIn = text => { if (authMode === "sip") setLoginStatus(text); };
+
   vobizUA.on("registered", () => {
     setStatus(`Ready — registered as ${displayName}`);
+    reportSignIn(`Signed in as ${displayName}.`);
     setSipRegistered(true);
   });
   vobizUA.on("registrationFailed", e => {
-    setStatus(`Registration failed: ${(e && e.cause) || "unknown"}`);
+    const cause = (e && e.cause) || "unknown";
+    setStatus(`Registration failed: ${cause}`);
+    // JsSIP reports a rejected password as an authentication cause, which on
+    // its own does not tell an agent what to do about it.
+    reportSignIn(/auth/i.test(cause)
+      ? `Vobiz rejected these credentials (${cause}). Check the username, and set a password you know with Change on that endpoint in Console.`
+      : `Could not sign in: ${cause}`);
     setSipRegistered(false);
   });
   // Without these two, a dropped transport leaves the panel showing "Ready"
   // while the endpoint is uncallable.
   vobizUA.on("unregistered", () => {
     setStatus("Not registered — reconnecting…");
+    reportSignIn("Signed out — reconnecting…");
     setSipRegistered(false);
   });
   vobizUA.on("disconnected", () => {
     setStatus("Disconnected from the registrar — reconnecting…");
+    reportSignIn("Disconnected from the registrar — reconnecting…");
     setSipRegistered(false);
   });
 

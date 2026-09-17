@@ -408,6 +408,36 @@ describe("signing in as an endpoint instead of an account", () => {
     expect(fetch.mock.calls.some(c => String(c[0]).includes("/agent/"))).toBe(false);
   });
 
+  it("says the credentials were rejected, instead of sitting on 'signing in'", async () => {
+    // A wrong password otherwise reads as a hang: the sign-in line kept saying
+    // "Signing in as …" while the real answer appeared somewhere else.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { pass: "wrong" });
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    t.ua.emit("registrationFailed", { cause: "Authentication Error" });
+    await flush();
+
+    expect(t.text("vobiz-login-status")).toMatch(/rejected these credentials/i);
+    expect(t.text("vobiz-login-status")).toMatch(/Console/);
+  });
+
+  it("confirms a successful sign-in on the form the agent used", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    t.ua.emit("registered");
+    await flush();
+    expect(t.text("vobiz-login-status")).toMatch(/signed in as play123456789/i);
+  });
+
   it("survives localStorage throwing, as it does in a private window", async () => {
     const real = Storage.prototype.setItem;
     Storage.prototype.setItem = () => { throw new Error("denied"); };
