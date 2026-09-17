@@ -70,37 +70,96 @@
             <span class="step-num">1</span>
             <h2 class="step-title">Sign in to Vobiz</h2>
           </div>
-          <p class="step-help">
-            Your Auth ID and Auth Token are on the
-            <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
-            under <strong>API credentials</strong>. The Auth Token is not your login password.
-          </p>
+          <div class="tabs" role="tablist" aria-label="How to sign in">
+            <button type="button" id="mode-account-tab" class="tab is-active" role="tab" aria-selected="true" aria-controls="mode-account">
+              Vobiz account
+            </button>
+            <button type="button" id="mode-sip-tab" class="tab" role="tab" aria-selected="false" aria-controls="mode-sip">
+              SIP direct
+            </button>
+          </div>
 
-          <div id="vobiz-login-form">
+          <!-- Signing in with the account. The backend holds the SIP identity. -->
+          <div id="mode-account" role="tabpanel" aria-labelledby="mode-account-tab">
+            <p class="step-help">
+              Your Auth ID and Auth Token are on the
+              <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
+              under <strong>API credentials</strong>. The Auth Token is not your login password.
+            </p>
+
+            <div id="vobiz-login-form">
+              <div class="form-group">
+                <label class="field-label" for="vobiz-auth-id">Auth ID</label>
+                <input type="text" id="vobiz-auth-id" class="input input-mono" placeholder="MA_XXXXXXXX" autocomplete="off" />
+              </div>
+
+              <div class="form-group">
+                <label class="field-label" for="vobiz-auth-token">Auth Token</label>
+                <input type="password" id="vobiz-auth-token" class="input" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+              </div>
+
+              <button id="vobiz-login-btn" class="btn btn-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                  <path d="m10 17 5-5-5-5M15 12H3"/>
+                </svg>
+                Log in
+              </button>
+            </div>
+          </div>
+
+          <!-- Signing in as one endpoint. Nothing account-wide is needed, and the
+               backend never sees or hands out these credentials. -->
+          <div id="mode-sip" role="tabpanel" aria-labelledby="mode-sip-tab" hidden>
+            <p class="step-help">
+              The endpoint's own SIP credentials, from
+              <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console</a> &rarr;
+              Voice &rarr; Endpoints. Signs in as that one endpoint, without
+              account-wide credentials.
+            </p>
+
             <div class="form-group">
-              <label class="field-label" for="vobiz-auth-id">Auth ID</label>
-              <input type="text" id="vobiz-auth-id" class="input input-mono" placeholder="MA_XXXXXXXX" autocomplete="off" />
+              <label class="field-label" for="sip-username">SIP username</label>
+              <input type="text" id="sip-username" class="input input-mono" placeholder="playXXXXXXXXXXXX" autocomplete="off" />
             </div>
 
             <div class="form-group">
-              <label class="field-label" for="vobiz-auth-token">Auth Token</label>
-              <input type="password" id="vobiz-auth-token" class="input" placeholder="Your Vobiz Auth Token" autocomplete="off" />
+              <label class="field-label" for="sip-password">SIP password</label>
+              <input type="password" id="sip-password" class="input" placeholder="Endpoint password" autocomplete="off" />
             </div>
 
-            <button id="vobiz-login-btn" class="btn btn-primary">
+            <div class="form-group">
+              <label class="field-label" for="sip-caller-id">Calling from</label>
+              <input type="tel" id="sip-caller-id" class="input input-mono" placeholder="+91XXXXXXXXXX" autocomplete="off" />
+              <p class="hint">
+                The number outgoing calls show. Carriers reject a call without a
+                real one, so this is required to dial out.
+              </p>
+            </div>
+
+            <label class="check-row" for="sip-remember">
+              <input type="checkbox" id="sip-remember" />
+              <span class="check-text">
+                Remember these
+                <span class="check-note">Kept in this browser, on this machine. Leave off on a shared computer.</span>
+              </span>
+            </label>
+
+            <button id="sip-connect-btn" class="btn btn-primary">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
                 <path d="m10 17 5-5-5-5M15 12H3"/>
               </svg>
-              Log in
+              Connect
             </button>
           </div>
 
           <p id="vobiz-login-status" class="hint">Not signed in.</p>
         </section>
 
-        <!-- Step 2 — caller ID -->
-        <section class="step">
+        <!-- Step 2 — caller ID. Account mode only: picking from the account's
+             numbers needs account credentials. SIP direct types one instead. -->
+        <section class="step" id="step-caller-id">
           <div class="step-head">
             <span class="step-num">2</span>
             <h2 class="step-title">Choose a caller ID</h2>
@@ -131,6 +190,13 @@
               <label class="field-label" for="dialnumber">Number to call</label>
               <input type="tel" id="dialnumber" class="input input-mono input-dial" placeholder="+91 98765 43210" />
             </div>
+            <label class="check-row" for="record-call">
+              <input type="checkbox" id="record-call" />
+              <span class="check-text">
+                Record this call
+                <span class="check-note">Recorded calls are billed. Play them back in the Vobiz Console.</span>
+              </span>
+            </label>
             <div class="actions">
               <button id="dialbtn" class="btn btn-primary" disabled>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -168,20 +234,6 @@
         </section>
       </div>
 
-      <div id="call-history">
-        <div class="section-title">
-          <span>Call recordings</span>
-          <button id="refresh-history-btn" class="icon-btn" title="Refresh" aria-label="Refresh recordings">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-              <path d="M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-              <path d="M8 16H3v5"/>
-            </svg>
-          </button>
-        </div>
-        <ul id="call-history-list"></ul>
-        <audio id="vobiz-playback-audio" controls hidden></audio>
-      </div>
 
       <!-- Explanation, kept at the bottom so it never gets in the way. -->
       <details class="faq">
@@ -223,9 +275,16 @@
         <div class="faq-item">
           <h3>Where do recordings go?</h3>
           <p>
-            Vobiz records the call and this panel lists recent ones above.
-            Playback is proxied through your calling backend, because recording
-            files need authentication a plain audio tag cannot send.
+            Tick <strong>Record this call</strong> before dialling and Vobiz
+            records that call. Leave it clear and nothing is recorded, and
+            nothing is billed for recording.
+          </p>
+          <p>
+            Play them back in the <strong>Vobiz Console</strong>, under
+            Voice &rarr; Recordings. They are not listed here: this panel would
+            only be showing you a copy of what the Console already holds, and
+            serving the audio through the calling backend meant that backend
+            could hand out call recordings to anyone who could reach it.
           </p>
         </div>
       </details>

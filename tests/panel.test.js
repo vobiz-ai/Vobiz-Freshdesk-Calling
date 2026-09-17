@@ -5,17 +5,8 @@ const LOGGED_IN = {
   body: { loggedIn: true, numbers: ["+911140848108", "+911140848109"], from: "+911140848108", authId: "MA_TEST" },
 };
 
-const RECORDINGS = {
-  body: {
-    objects: [
-      { recording_id: "rec_a", add_time: "2026-09-14 11:42:07", rounded_recording_duration: 96 },
-      { recording_id: "rec_b", add_time: "2026-09-14 10:18:44", rounded_recording_duration: 41 },
-    ],
-  },
-};
-
 function base(extra = {}) {
-  return routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS, ...extra });
+  return routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, ...extra });
 }
 
 beforeEach(() => {
@@ -57,7 +48,6 @@ describe("caller-ID selection", () => {
       fetch: routes({
         "/agent/": AGENT_OK,
         "/session/": { body: { loggedIn: true, numbers: [], from: null, authId: "MA_TEST" } },
-        "/recordings/": RECORDINGS,
       }),
     });
     await flush();
@@ -98,60 +88,73 @@ describe("inbound setup", () => {
   });
 });
 
-describe("call recordings", () => {
-  it("lists recordings once logged in", async () => {
+describe("recording is chosen per call, by the agent", () => {
+  /**
+   * Whether a call is recorded travels ON the call, as the `X-VH-Record` SIP
+   * header Vobiz hands to the answer webhook. Nothing is stored server-side, so
+   * these assert the header itself — that is the entire contract.
+   */
+  async function dial(record) {
     const t = await boot({ iparams: SETTINGS, fetch: base() });
     await flush();
-    const items = t.el("call-history-list").querySelectorAll("li");
-    expect(items.length).toBe(2);
+    t.ua.emit("registered");
+    if (record) t.el("record-call").checked = true;
+    t.el("dialnumber").value = "+919876543210";
+    t.el("dialbtn").click();
+    await flush();
+    return t;
+  }
+
+  it("sends no header when the box is clear, so nothing is recorded or billed", async () => {
+    const t = await dial(false);
+    expect(t.ua.calls).toHaveLength(1);
+    const headers = t.ua.calls[0].options.extraHeaders || [];
+    expect(headers.join(" ")).not.toMatch(/X-VH-Record/i);
   });
 
-  it("does not ask for recordings before login", async () => {
-    // Regression: the panel requested recordings on boot, before any session
-    // existed, and showed an error on every fresh open.
-    const fetch = routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } });
-    await boot({ iparams: SETTINGS, fetch });
-    await flush();
-    expect(fetch.mock.calls.some(c => String(c[0]).includes("/recordings/"))).toBe(false);
+  it("sends X-VH-Record when the box is ticked", async () => {
+    const t = await dial(true);
+    const headers = t.ua.calls[0].options.extraHeaders || [];
+    expect(headers).toContain("X-VH-Record: true");
   });
 
-  it("refreshes on demand", async () => {
-    const fetch = base();
-    const t = await boot({ iparams: SETTINGS, fetch });
-    await flush();
-    const before = fetch.mock.calls.filter(c => String(c[0]).includes("/recordings/")).length;
+  it("applies the same choice to an inbound call it joins", async () => {
+    // Inbound is answered by placing an outgoing leg into the caller's room, so
+    // the box has to reach that leg too or it would only work in one direction.
+    const offer = { pending: true, from: "+919999900001", room: "fdroom1", callUuid: "u-1" };
+    const fetch = vi.fn(async (url, options = {}) => {
+      const u = String(url);
+      const json =
+        u.includes("/agent/") ? AGENT_OK.body
+        : u.includes("/inbound-pending/") ? offer
+        : u.includes("/inbound-accept") ? { ok: true, room: offer.room, from: offer.from }
+        : {};
+      return { ok: true, status: 200, json: async () => json };
+    });
 
-    t.el("refresh-history-btn").click();
-    await flush();
-    const after = fetch.mock.calls.filter(c => String(c[0]).includes("/recordings/")).length;
-    expect(after).toBe(before + 1);
+    vi.useFakeTimers();
+    try {
+      const t = await boot({ iparams: SETTINGS, fetch });
+      t.ua.emit("registered");
+      t.el("record-call").checked = true;
+      await vi.advanceTimersByTimeAsync(2100);
+      await flush();
+      t.el("acceptbtn").click();
+      await flush();
+
+      expect(t.ua.calls[0].options.extraHeaders).toContain("X-VH-Record: true");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("says so when there are none", async () => {
-    const t = await boot({ iparams: SETTINGS, fetch: base({ "/recordings/": { body: { objects: [] } } }) });
-    await flush();
-    expect(t.el("call-history-list").textContent).toMatch(/no recordings/i);
-  });
-
-  it("reports a failure to load", async () => {
-    const t = await boot({ iparams: SETTINGS, fetch: base({ "/recordings/": new Error("ECONNREFUSED") }) });
-    await flush();
-    expect(t.el("call-history-list").textContent).toMatch(/could not load/i);
-  });
-
-  it("plays a recording through the backend, url-encoding the id", async () => {
+  it("no longer lists recordings in the panel", async () => {
+    // They live in the Vobiz Console. Mirroring them here meant streaming call
+    // audio back out through the calling backend.
     const t = await boot({ iparams: SETTINGS, fetch: base() });
     await flush();
-
-    const audio = t.el("vobiz-playback-audio");
-    // jsdom has no media stack; play() would throw "not implemented".
-    audio.play = vi.fn(() => Promise.resolve());
-
-    const playBtn = t.el("call-history-list").querySelector("button");
-    expect(playBtn).toBeTruthy();
-    playBtn.click();
-
-    expect(audio.src).toContain("/recording-audio/priya/rec_a");
+    expect(t.el("call-history-list")).toBeNull();
+    expect(t.el("vobiz-playback-audio")).toBeNull();
   });
 });
 
@@ -162,7 +165,7 @@ describe("call progress", () => {
   // The browser is the A leg: it sends the INVITE itself, so progress comes
   // from the JsSIP session rather than from polling the backend.
   async function dial() {
-    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS });
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN });
     const t = await boot({ iparams: SETTINGS, fetch });
     await vi.advanceTimersByTimeAsync(0);
     t.ua.emit("registered");
@@ -203,7 +206,7 @@ describe("call progress", () => {
     // The first line of defence against dialling with nowhere to put the audio.
     // The in-placeCall guard behind it is covered in app.test.js, which reaches
     // placeCall through cti.triggerDialer rather than the button.
-    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS });
+    const fetch = routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN });
     const t = await boot({ iparams: SETTINGS, fetch });
     await vi.advanceTimersByTimeAsync(0);
 
@@ -247,7 +250,7 @@ describe("defensive guards", () => {
   it("survives a hangup that the SIP stack rejects", async () => {
     const t = await boot({
       iparams: SETTINGS,
-      fetch: routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN, "/recordings/": RECORDINGS }),
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": LOGGED_IN }),
     });
     await flush();
     t.ua.emit("registered");
@@ -258,5 +261,248 @@ describe("defensive guards", () => {
 
     // The error is caught and logged rather than propagating to the click handler.
     expect(() => t.el("hangupbtn").click()).not.toThrow();
+  });
+});
+
+/*
+ * Two ways in. The account path asks the backend which SIP identity this
+ * installation is; the SIP-direct path is handed the endpoint's own
+ * credentials and never involves the backend at all — which is the point,
+ * since the backend serving SIP passwords is its own open issue.
+ */
+describe("signing in as an endpoint instead of an account", () => {
+  beforeEach(() => {
+    try { localStorage.clear(); } catch { /* private window */ }
+  });
+
+  const fillSip = (t, { user = "play123456789", pass = "s3cret", callerId = "+919876543210" } = {}) => {
+    t.el("sip-username").value = user;
+    t.el("sip-password").value = pass;
+    t.el("sip-caller-id").value = callerId;
+  };
+
+  it("defaults to the account tab and registers on its own", async () => {
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    // The backend is asked which identity to be, exactly as before.
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/agent/"))).toBe(true);
+    expect(t.el("mode-sip").hidden).toBe(true);
+  });
+
+  it("does not register on its own in SIP mode — nobody has typed anything yet", async () => {
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    t.el("mode-sip-tab").click();
+    await flush();
+
+    expect(t.el("mode-sip").hidden).toBe(false);
+    // Choosing from the account's numbers is the thing these credentials
+    // cannot authorise, so that step is hidden and a field replaces it.
+    expect(t.el("step-caller-id").hidden).toBe(true);
+  });
+
+  it("registers with the typed credentials, never asking the backend for any", async () => {
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+    const before = fetch.mock.calls.length;
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.ua.config.uri).toBe("sip:play123456789@registrar.vobiz.ai");
+    expect(t.ua.config.password).toBe("s3cret");
+    // No credential ever leaves the backend for this sign-in.
+    const after = fetch.mock.calls.slice(before).map(c => String(c[0]));
+    expect(after.some(u => u.includes("/agent/"))).toBe(false);
+    expect(after.some(u => u.includes("/login"))).toBe(false);
+  });
+
+  it("refuses to sign in without a caller ID, rather than failing at dial time", async () => {
+    // Carriers reject a call with no CLI, and that failure says nothing about
+    // a missing caller ID — so it is caught here, where it can be explained.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { callerId: "" });
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.text("vobiz-login-status")).toMatch(/number to call from/i);
+  });
+
+  it("carries the caller ID on the call, since no account session holds one", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+    t.el("sip-connect-btn").click();
+    await flush();
+    t.ua.emit("registered");
+
+    t.el("dialnumber").value = "+911140848108";
+    t.el("dialbtn").click();
+    await flush();
+
+    expect(t.ua.calls[0].options.extraHeaders).toContain("X-VH-Caller-ID: +919876543210");
+  });
+
+  it("only remembers the credentials when asked to", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+
+    t.el("sip-connect-btn").click();
+    await flush();
+    expect(localStorage.getItem("vobiz.sipDirect")).toBeNull();
+
+    t.el("sip-remember").checked = true;
+    t.el("sip-connect-btn").click();
+    await flush();
+    expect(JSON.parse(localStorage.getItem("vobiz.sipDirect")).username).toBe("play123456789");
+  });
+
+  it("refuses an incomplete sign-in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { pass: "" });
+    // Account mode already registered on boot, so the check is that no SECOND
+    // registration is attempted — not that none exists.
+    const before = t.JsSIP.UA.mock.calls.length;
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.text("vobiz-login-status")).toMatch(/username and password/i);
+    expect(t.JsSIP.UA.mock.calls.length).toBe(before);
+  });
+
+  it("does not append a second domain to a username that already has one", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { user: "play123@registrar.vobiz.ai" });
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    expect(t.ua.config.uri).toBe("sip:play123@registrar.vobiz.ai");
+  });
+
+  it("signs back in on its own when the agent asked to be remembered", async () => {
+    localStorage.setItem("vobiz.authMode", JSON.stringify("sip"));
+    localStorage.setItem("vobiz.sipDirect", JSON.stringify({
+      username: "play999", password: "kept", callerId: "+919876543210",
+    }));
+
+    const fetch = base();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+
+    expect(t.el("mode-sip").hidden).toBe(false);
+    expect(t.ua.config.uri).toBe("sip:play999@registrar.vobiz.ai");
+    // Still no backend involvement, even on a restored sign-in.
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/agent/"))).toBe(false);
+  });
+
+  it("says the credentials were rejected, instead of sitting on 'signing in'", async () => {
+    // A wrong password otherwise reads as a hang: the sign-in line kept saying
+    // "Signing in as …" while the real answer appeared somewhere else.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t, { pass: "wrong" });
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    t.ua.emit("registrationFailed", { cause: "Authentication Error" });
+    await flush();
+
+    expect(t.text("vobiz-login-status")).toMatch(/rejected these credentials/i);
+    expect(t.text("vobiz-login-status")).toMatch(/Console/);
+  });
+
+  it("confirms a successful sign-in on the form the agent used", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    t.el("mode-sip-tab").click();
+    fillSip(t);
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    t.ua.emit("registered");
+    await flush();
+    expect(t.text("vobiz-login-status")).toMatch(/signed in as play123456789/i);
+  });
+
+  it("survives localStorage throwing, as it does in a private window", async () => {
+    const real = Storage.prototype.setItem;
+    Storage.prototype.setItem = () => { throw new Error("denied"); };
+    try {
+      const t = await boot({ iparams: SETTINGS, fetch: base() });
+      await flush();
+      expect(() => t.el("mode-sip-tab").click()).not.toThrow();
+      fillSip(t);
+      expect(() => t.el("sip-connect-btn").click()).not.toThrow();
+      await flush();
+      expect(t.ua.config.password).toBe("s3cret");
+    } finally {
+      Storage.prototype.setItem = real;
+    }
+  });
+});
+
+describe("a replaced SIP connection stops speaking for the panel", () => {
+  beforeEach(() => { try { localStorage.clear(); } catch { /* private window */ } });
+
+  it("ignores the outgoing UA's teardown events", async () => {
+    // stop() unregisters and closes the socket asynchronously, so the old UA
+    // fires `disconnected` AFTER its replacement has started connecting. Left
+    // attached, that handler reported a dead connection as the panel's state —
+    // "Disconnected from the registrar" on a sign-in that was working.
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    const first = t.ua;
+
+    t.el("mode-sip-tab").click();
+    t.el("sip-username").value = "play123456789";
+    t.el("sip-password").value = "s3cret";
+    t.el("sip-caller-id").value = "+919876543210";
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    const second = t.ua;
+    expect(second).not.toBe(first);
+
+    // The superseded UA now says what it always said on the way out.
+    first.emit("disconnected");
+    first.emit("unregistered");
+    await flush();
+    expect(t.text("status-message")).not.toMatch(/disconnected/i);
+
+    // The live one is still able to report its own state.
+    second.emit("registered");
+    await flush();
+    expect(t.text("vobiz-login-status")).toMatch(/signed in as play123456789/i);
+  });
+
+  it("does not answer an inbound leg offered to a replaced connection", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: base() });
+    await flush();
+    const first = t.ua;
+
+    t.el("mode-sip-tab").click();
+    t.el("sip-username").value = "play123456789";
+    t.el("sip-password").value = "s3cret";
+    t.el("sip-caller-id").value = "+919876543210";
+    t.el("sip-connect-btn").click();
+    await flush();
+
+    first.emit("newRTCSession", { originator: "remote", session: new FakeSession() });
+    await flush();
+    expect(t.el("incoming").hidden).toBe(true);
   });
 });

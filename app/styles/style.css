@@ -500,30 +500,9 @@ button[disabled] {
   gap: 8px;
 }
 
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: none;
-  border-radius: 7px;
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
 
-.icon-btn:hover {
-  background: var(--orange-soft);
-  color: var(--orange-500);
-}
 
-.icon-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--ring);
-}
+
 
 /* ---------- live call ------------------------------------------------------ */
 
@@ -539,74 +518,84 @@ button[disabled] {
   color: var(--orange-500);
 }
 
-/* ---------- recordings ------------------------------------------------------ */
-
-#call-history {
-  margin: 0 14px;
-  padding: 14px 0;
-  border-top: 1px solid var(--border);
+audio#vobiz-remote-audio {
+  display: none;
 }
 
-.section-title {
+/* ---------- sign-in tabs ----------------------------------------------------- */
+
+.tabs {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-3);
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--sunken);
 }
 
-#call-history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-#call-history-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 11.5px;
-  color: var(--text-2);
-}
-
-#call-history-list li:last-child {
-  border-bottom: none;
-}
-
-#call-history-list button {
-  flex: none;
-  padding: 3px 9px;
-  border: 1px solid var(--border-strong);
+.tab {
+  flex: 1;
+  padding: 6px 10px;
+  border: none;
   border-radius: 7px;
-  background: var(--card);
+  background: none;
   font-family: inherit;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.tab:hover { color: var(--text); }
+
+.tab.is-active {
+  background: var(--card);
+  color: var(--orange-500);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+
+.tab:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* ---------- record toggle ---------------------------------------------------- */
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 12px;
   cursor: pointer;
 }
 
-#call-history-list button:hover {
-  border-color: var(--orange-500);
-  color: var(--orange-500);
+.check-row input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  accent-color: var(--orange-500);
+  cursor: pointer;
 }
 
-#vobiz-playback-audio {
-  width: 100%;
-  margin-top: 10px;
+.check-row input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: 3px;
 }
 
-audio#vobiz-remote-audio {
-  display: none;
+.check-text {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+
+/* Billing is a consequence the agent should see before ticking, not after. */
+.check-note {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-3);
 }
 
 /* ---------- FAQ -------------------------------------------------------------- */

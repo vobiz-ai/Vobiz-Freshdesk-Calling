@@ -86,7 +86,9 @@ async function init() {
   document.getElementById("vobiz-login-btn").addEventListener("click", vobizLogin);
   document.getElementById("vobiz-number-select").addEventListener("change", vobizSelectNumber);
   document.getElementById("setup-inbound-btn").addEventListener("click", setupInboundCalling);
-  document.getElementById("refresh-history-btn").addEventListener("click", loadCallHistory);
+  document.getElementById("mode-account-tab").addEventListener("click", () => setAuthMode("account"));
+  document.getElementById("mode-sip-tab").addEventListener("click", () => setAuthMode("sip"));
+  document.getElementById("sip-connect-btn").addEventListener("click", sipDirectConnect);
   document.getElementById("hangupbtn").addEventListener("click", hangUp);
   document.getElementById("acceptbtn").addEventListener("click", acceptCall);
   document.getElementById("declinebtn").addEventListener("click", declineCall);
@@ -110,8 +112,14 @@ async function init() {
     try { if (vobizUA) vobizUA.stop(); } catch { /* nothing useful to do on the way out */ }
   });
 
-  initVobizSip();
-  restoreVobizSession();
+  restoreAuthMode();
+  // Account mode registers on its own, because the backend already knows which
+  // identity this installation is. SIP direct cannot: nobody has typed the
+  // credentials yet, so it waits for Connect (or restores a remembered sign-in).
+  if (authMode !== "sip") {
+    initVobizSip();
+    restoreVobizSession();
+  }
 }
 
 /** === Vobiz account login (Auth ID / Auth Token) ===
@@ -124,6 +132,125 @@ async function init() {
 function setLoginStatus(text) {
   const el = document.getElementById("vobiz-login-status");
   if (el) el.textContent = text;
+}
+
+/* ------------------------------------------------------------------ *
+ * Two ways in
+ *
+ * "account"  Auth ID and Auth Token. The backend decides which SIP
+ *            identity this installation is and hands it over, and it
+ *            can list the account's numbers so the caller ID is a
+ *            dropdown rather than something to be typed correctly.
+ *
+ * "sip"      The endpoint's own SIP username and password, typed here.
+ *            Nothing account-wide is involved, the backend is never
+ *            asked for credentials, and one agent signing in cannot
+ *            obtain another's. The caller ID has to be typed, because
+ *            listing the account's numbers is exactly the thing these
+ *            credentials do not authorise.
+ *
+ * Worth being plain about the trade: an endpoint password in the browser
+ * is not a new exposure — the account path already sends one here, from
+ * an endpoint that serves it to anyone who can reach the backend. This
+ * path removes that endpoint from the picture rather than adding a risk.
+ * ------------------------------------------------------------------ */
+
+const AUTH_MODE_KEY = "vobiz.authMode";
+const SIP_CREDS_KEY = "vobiz.sipDirect";
+let authMode = "account";
+
+/** localStorage is unavailable in a private window and throws rather than
+ *  returning null, and losing a saved username is never worth a broken panel. */
+function readStore(key) {
+  try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
+}
+function writeStore(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* nothing to do; the panel works without it */ }
+}
+
+function setAuthMode(mode) {
+  authMode = mode === "sip" ? "sip" : "account";
+  writeStore(AUTH_MODE_KEY, authMode);
+
+  const isSip = authMode === "sip";
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !visible;
+  };
+  show("mode-account", !isSip);
+  show("mode-sip", isSip);
+  // Picking from the account's numbers needs account credentials, so in SIP
+  // mode the caller ID is a field inside that panel instead.
+  show("step-caller-id", !isSip);
+
+  const tab = (id, active) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("is-active", active);
+    el.setAttribute("aria-selected", String(active));
+  };
+  tab("mode-account-tab", !isSip);
+  tab("mode-sip-tab", isSip);
+}
+
+/** The caller ID to dial out as, when signed in as an endpoint. */
+function sipDirectCallerId() {
+  const el = document.getElementById("sip-caller-id");
+  return el ? el.value.trim() : "";
+}
+
+/**
+ * Sign in as one endpoint.
+ *
+ * Registration is all this does. There is no account session behind it, so the
+ * caller ID cannot come from the backend and travels on each call instead —
+ * see callHeaders().
+ */
+function sipDirectConnect() {
+  const username = (document.getElementById("sip-username") || {}).value?.trim() || "";
+  const password = (document.getElementById("sip-password") || {}).value || "";
+  const callerId = sipDirectCallerId();
+  const remember = Boolean((document.getElementById("sip-remember") || {}).checked);
+
+  if (!username || !password) {
+    setLoginStatus("Enter the endpoint's SIP username and password.");
+    return;
+  }
+  // Refused here rather than at dial time: carriers reject a call with no CLI,
+  // and the failure that produces says nothing about a missing caller ID.
+  if (!callerId) {
+    setLoginStatus("Enter the number to call from — carriers reject a call without one.");
+    return;
+  }
+
+  writeStore(SIP_CREDS_KEY, remember ? { username, password, callerId } : null);
+
+  // A bare username is the common case; the domain comes from the registrar.
+  const sipUser = username.includes("@") ? username : `${username}@registrar.vobiz.ai`;
+  setLoginStatus(`Signing in as ${username}…`);
+  // Nothing is verified against an account, so dialling is enabled on the
+  // strength of the registration alone — refreshDialState still requires it.
+  setDialEnabled(true);
+  startSipUA(sipUser, password, username);
+}
+
+/** Restore the last choice, and sign in again if the agent asked us to. */
+function restoreAuthMode() {
+  setAuthMode(readStore(AUTH_MODE_KEY) || "account");
+  if (authMode !== "sip") return;
+
+  const saved = readStore(SIP_CREDS_KEY);
+  if (!saved || !saved.username) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
+  set("sip-username", saved.username);
+  set("sip-password", saved.password);
+  set("sip-caller-id", saved.callerId);
+  const box = document.getElementById("sip-remember");
+  if (box) box.checked = true;
+  if (saved.password && saved.callerId) sipDirectConnect();
 }
 
 function renderNumberOptions(numbers, selected) {
@@ -272,6 +399,9 @@ function joinRoom(room, from) {
 
   try {
     const session = vobizUA.call(`sip:${target}@registrar.vobiz.ai`, {
+      // The Record choice applies to an inbound call too. Recording starts when
+      // this leg joins, so the caller's time on hold is not in the file.
+      extraHeaders: callHeaders(),
       ...(warmed ? { mediaStream: warmed } : { mediaConstraints: { audio: true, video: false } }),
       // Same reason as every other leg: without STUN the offer carries only
       // host candidates and the call is torn down before any audio flows.
@@ -521,7 +651,6 @@ async function restoreVobizSession() {
       renderNumberOptions(session.numbers, session.from);
       setLoginStatus(`Logged in as ${session.authId} — calling from ${session.from}`);
       setDialEnabled(true);
-      loadCallHistory();
     } else {
       setDialEnabled(false);
     }
@@ -553,7 +682,6 @@ async function vobizLogin() {
         : `Logged in as ${authId} — this account has no phone numbers yet`,
     );
     setDialEnabled(Boolean(data.selected));
-    if (data.selected) loadCallHistory();
   } catch (err) {
     console.error("[Vobiz] Login failed:", err);
     setLoginStatus(`Login failed: ${err.message}`);
@@ -611,72 +739,47 @@ async function setupInboundCalling() {
   }
 }
 
-/** === Call recordings ===
- * Only the Recording list — no CDR merge, no phone numbers or SIP legs
- * shown. Played through /recording-audio/:agentId/:recordingId — the
- * backend proxy that adds the auth headers a plain <audio> tag can't
- * send itself. Field names match Vobiz's real Recording object
- * (add_time, rounded_recording_duration, recording_id).
+/**
+ * === Recording ===
+ *
+ * Whether a call is recorded is decided per call, by the agent, and travels on
+ * the call itself: Vobiz strips headers beginning `X-VH-` off the INVITE and
+ * hands them to the answer webhook as ordinary fields, so a ticked box here
+ * becomes `<Record>` in the XML the backend returns. Unticked sends no header,
+ * the backend emits no `<Record>`, and nothing is recorded or billed for.
+ *
+ * The same header rides on every call this panel places — a dialled number, or
+ * the leg that joins an inbound caller's room — so both directions obey the
+ * box without the backend having to remember anything between requests.
+ *
+ * There is no recordings list here any more. Recordings live in the Vobiz
+ * Console, which already lists them; mirroring that meant streaming call audio
+ * back out through the calling backend, so anyone who could reach the backend
+ * could pull recordings out of it.
  */
-async function loadCallHistory() {
-  const listEl = document.getElementById("call-history-list");
-  if (!listEl || !BACKEND_URL || !AGENT_ID) return;
-
-  try {
-    const res = await backendFetch(`${BACKEND_URL}/recordings/${encodeURIComponent(AGENT_ID)}?limit=15`);
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || "could not load recordings");
-    renderCallHistory(json.objects || []);
-  } catch (err) {
-    console.warn("[Vobiz] Could not load recordings:", err);
-    listEl.innerHTML = `<li class="empty">Could not load recordings.</li>`;
-  }
+function wantsRecording() {
+  const box = document.getElementById("record-call");
+  return Boolean(box && box.checked);
 }
 
-function renderCallHistory(recordings) {
-  const listEl = document.getElementById("call-history-list");
-  if (!listEl) return;
-
-  if (!recordings.length) {
-    listEl.innerHTML = `<li class="empty">No recordings yet.</li>`;
-    return;
+/**
+ * Extra SIP headers for a call, as JsSIP wants them: whole header lines.
+ *
+ * Vobiz applies its own rules to these and silently drops anything that fails
+ * them, so keep values inside [A-Za-z0-9_+()%.-] with no spaces. `true` is
+ * safely inside that set.
+ */
+function callHeaders() {
+  const headers = [];
+  if (wantsRecording()) headers.push("X-VH-Record: true");
+  // Signed in as an endpoint, there is no account session for the backend to
+  // read a caller ID out of, so it travels on the call like everything else
+  // the agent chose. In account mode the backend already knows it.
+  if (authMode === "sip") {
+    const callerId = sipDirectCallerId().replace(/[^\d+]/g, "");
+    if (callerId) headers.push(`X-VH-Caller-ID: ${callerId}`);
   }
-
-  listEl.innerHTML = "";
-  recordings.forEach(rec => {
-    const seconds = Number(rec.rounded_recording_duration) || 0;
-    const durationText = seconds > 0 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : "";
-    const when = rec.add_time && new Date(rec.add_time);
-    const whenText = when && !isNaN(when) ? when.toLocaleString() : "";
-
-    const li = document.createElement("li");
-
-    const info = document.createElement("span");
-    info.className = "info";
-    const metaEl = document.createElement("span");
-    metaEl.className = "meta";
-    metaEl.textContent = [durationText, whenText].filter(Boolean).join(" · ") || "Call recording";
-    info.append(metaEl);
-
-    const playBtn = document.createElement("button");
-    playBtn.className = "secondary-btn play-btn";
-    playBtn.textContent = "▶ Play";
-    playBtn.addEventListener("click", () => playRecording(rec.recording_id));
-
-    li.append(info, playBtn);
-    listEl.appendChild(li);
-  });
-}
-
-function playRecording(recordingId) {
-  const audioEl = document.getElementById("vobiz-playback-audio");
-  if (!audioEl) return;
-  audioEl.src = `${BACKEND_URL}/recording-audio/${encodeURIComponent(AGENT_ID)}/${encodeURIComponent(recordingId)}`;
-  // The element is hidden until there is something to play; an empty native
-  // player renders as a bright browser-chrome blob.
-  audioEl.hidden = false;
-  audioEl.classList.add("is-visible");
-  audioEl.play().catch(err => console.warn("[Vobiz] recording playback blocked:", err));
+  return headers;
 }
 
 /**
@@ -759,13 +862,40 @@ async function initVobizSip() {
     return;
   }
 
-  setStatus(`Connecting as ${agent.displayName}…`);
+  startSipUA(agent.sipUser, agent.sipPassword, agent.displayName);
+}
+
+/**
+ * Bring up the SIP stack for one identity.
+ *
+ * Shared by both ways in: the account sign-in above, which asks the backend
+ * which identity this installation is, and SIP-direct sign-in, where the agent
+ * types the endpoint's own credentials and the backend is never involved.
+ */
+function startSipUA(sipUser, sipPassword, displayName) {
+  setStatus(`Connecting as ${displayName}…`);
+
+  // Re-signing in replaces the previous registration rather than stacking a
+  // second one on the same identity; two live registrations evict each other.
+  //
+  // Its listeners come off FIRST. stop() unregisters and closes the socket
+  // asynchronously, so the outgoing UA fires `unregistered` and `disconnected`
+  // a moment later — after this function has already started the replacement.
+  // Left attached, those handlers overwrite the new UA's status with
+  // "Disconnected from the registrar", describing a UA that is gone while the
+  // live one is connecting perfectly well.
+  if (vobizUA) {
+    const previous = vobizUA;
+    vobizUA = null;
+    try { previous.removeAllListeners(); } catch { /* not an emitter after all */ }
+    try { previous.stop(); } catch { /* already down */ }
+  }
 
   const vobizSocket = new JsSIP.WebSocketInterface(REGISTRAR_URL);
-  vobizUA = new JsSIP.UA({
+  const ua = new JsSIP.UA({
     sockets: [vobizSocket],
-    uri: `sip:${agent.sipUser}`,
-    password: agent.sipPassword,
+    uri: `sip:${sipUser}`,
+    password: sipPassword,
     register: true,
     // No space in the User-Agent, deliberately.
     //
@@ -788,29 +918,57 @@ async function initVobizSip() {
     // the supported configuration rather than a workaround.
     session_timers: false,
   });
+  vobizUA = ua;
 
-  vobizUA.on("registered", () => {
-    setStatus(`Ready — registered as ${agent.displayName}`);
+  // Belt and braces alongside removeAllListeners above: a handler only speaks
+  // for the UA it was attached to. Anything arriving from a superseded one —
+  // a late event, a retry already in flight — is about a connection nobody is
+  // using any more, and must not be reported as the state of this panel.
+  const isCurrent = () => vobizUA === ua;
+
+  // Signing in with endpoint credentials puts the outcome next to the form the
+  // agent just used. Without this the sign-in line sits on "Signing in as …"
+  // for as long as the panel is open while the real answer — most often a
+  // rejected password — is reported somewhere else entirely, and a wrong
+  // password reads as a hang.
+  const reportSignIn = text => { if (authMode === "sip") setLoginStatus(text); };
+
+  ua.on("registered", () => {
+    if (!isCurrent()) return;
+    setStatus(`Ready — registered as ${displayName}`);
+    reportSignIn(`Signed in as ${displayName}.`);
     setSipRegistered(true);
   });
-  vobizUA.on("registrationFailed", e => {
-    setStatus(`Registration failed: ${(e && e.cause) || "unknown"}`);
+  ua.on("registrationFailed", e => {
+    if (!isCurrent()) return;
+    const cause = (e && e.cause) || "unknown";
+    setStatus(`Registration failed: ${cause}`);
+    // JsSIP reports a rejected password as an authentication cause, which on
+    // its own does not tell an agent what to do about it.
+    reportSignIn(/auth/i.test(cause)
+      ? `Vobiz rejected these credentials (${cause}). Check the username, and set a password you know with Change on that endpoint in Console.`
+      : `Could not sign in: ${cause}`);
     setSipRegistered(false);
   });
   // Without these two, a dropped transport leaves the panel showing "Ready"
   // while the endpoint is uncallable.
-  vobizUA.on("unregistered", () => {
+  ua.on("unregistered", () => {
+    if (!isCurrent()) return;
     setStatus("Not registered — reconnecting…");
+    reportSignIn("Signed out — reconnecting…");
     setSipRegistered(false);
   });
-  vobizUA.on("disconnected", () => {
+  ua.on("disconnected", () => {
+    if (!isCurrent()) return;
     setStatus("Disconnected from the registrar — reconnecting…");
+    reportSignIn("Disconnected from the registrar — reconnecting…");
     setSipRegistered(false);
   });
 
   // Vobiz dialing INTO this registered endpoint — the agent leg of a call
   // our backend originated via the REST API (outbound bridge).
-  vobizUA.on("newRTCSession", data => {
+  ua.on("newRTCSession", data => {
+    if (!isCurrent()) return;
     if (data.originator !== "remote") return;
 
     currentRTCSession = data.session;
@@ -825,11 +983,11 @@ async function initVobizSip() {
     // The caller can give up, or Vobiz can time the leg out, while the banner
     // is still on screen. Clear it either way rather than leaving an Accept
     // button that answers a call which no longer exists.
-    currentRTCSession.on("ended", () => endIncoming(`Ready — registered as ${agent.displayName}`));
-    currentRTCSession.on("failed", () => endIncoming(`Ready — registered as ${agent.displayName}`));
+    currentRTCSession.on("ended", () => endIncoming(`Ready — registered as ${displayName}`));
+    currentRTCSession.on("failed", () => endIncoming(`Ready — registered as ${displayName}`));
   });
 
-  vobizUA.start();
+  ua.start();
 
   // Surface a dead microphone path at startup rather than mid-call.
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -892,6 +1050,8 @@ async function placeCall(number) {
 
   try {
     const session = vobizUA.call(target, {
+      // Carries the Record choice to the backend — see callHeaders().
+      extraHeaders: callHeaders(),
       mediaConstraints: { audio: true, video: false },
       // Without a STUN server the offer carries only host candidates, so Vobiz
       // sees a private address and logs "PrivateIP … Detected in SDP"; the
@@ -925,9 +1085,6 @@ async function placeCall(number) {
       setStatus("Ready");
       currentRTCSession = null;
       setHangupVisible(false);
-      // Vobiz writes the CDR a few seconds after the call ends, so refreshing
-      // immediately would miss this call and look like nothing happened.
-      setTimeout(loadCallHistory, 5000);
     });
   } catch (err) {
     console.error("[Vobiz] Could not start the call:", err);

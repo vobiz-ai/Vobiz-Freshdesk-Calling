@@ -198,7 +198,11 @@ Browsers already treat localhost as a secure context, so this does not weaken th
 
 **`GET /agent/{agentId}` serves a long-lived SIP password over an unauthenticated endpoint.** Anyone who learns the backend URL can retrieve working SIP credentials, then register as that agent and place calls billed to the account. The contract warns about exactly this. The reference backend does it anyway.
 
+> **Avoidable since 17 Sep.** Signing in with **SIP direct** never calls this route: the agent supplies the endpoint's own credentials and the backend is not asked for any. That does not fix the route — it is still there, still unauthenticated, and still serves whoever asks — but an installation that uses SIP direct is not relying on it.
+
 **Recording URLs are not signed.** The contract requires `/recordings` to return short-lived signed URLs and `/recording-audio` to verify the signature. The reference backend instead requires a live in-memory agent session, which is a different — and weaker — control, and breaks entirely for any consumer that isn't a logged-in browser.
+
+> **No longer reachable from this app since 17 Sep.** The panel stopped listing recordings and stopped streaming them; they are played in the Vobiz Console, which already authenticates. The backend routes remain, and remain a liability for anything else that calls them.
 
 **`agentId` is treated as proof of identity.** It arrives as a plain string in the path or body and nothing authenticates it. Every endpoint in the contract is effectively open.
 
