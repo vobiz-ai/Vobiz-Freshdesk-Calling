@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { boot, flush, routes, FakeSession, AGENT_OK, SETTINGS } from "./harness.js";
 
 beforeEach(() => {
@@ -500,5 +500,199 @@ describe("leaving the page", () => {
     expect(t.ua.started).toBe(true);
     window.dispatchEvent(new window.Event("beforeunload"));
     expect(t.ua.stopped).toBe(true);
+  });
+});
+
+/*
+ * Inbound calls do not arrive as a SIP INVITE, because Vobiz cannot deliver one
+ * into a browser — its router builds a gateway URI with the registration's
+ * `contact=sip:…` nested unescaped inside a `;`-delimited parameter list, fails
+ * to parse its own output, and drops the INVITE. So the caller waits in a
+ * conference room, the backend tells the panel about them, and accepting places
+ * an ordinary OUTGOING call into that room. Going out is the direction that
+ * works, which is the whole reason the flow is shaped this way.
+ */
+describe("inbound via the conference bridge", () => {
+  const OFFER = {
+    pending: true,
+    from: "+919999900001",
+    to: "+918071579597",
+    room: "fdaaaabbbbccccdddd",
+    callUuid: "aaaa-bbbb-cccc-dddd",
+  };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** Boot, register, and let one poll tick land. */
+  async function offered(pending = OFFER) {
+    const posts = [];
+    const fetch = vi.fn(async (url, options = {}) => {
+      const u = String(url);
+      if (options.method === "POST") posts.push({ url: u, body: JSON.parse(options.body || "{}") });
+      const json =
+        u.includes("/agent/") ? AGENT_OK.body
+        : u.includes("/session/") ? { loggedIn: false }
+        : u.includes("/inbound-pending/") ? pending
+        : u.includes("/inbound-accept") ? { ok: true, room: pending.room, from: pending.from }
+        : {};
+      return { ok: true, status: 200, json: async () => json };
+    });
+
+    const t = await boot({ iparams: SETTINGS, fetch });
+    t.ua.emit("registered");
+    await vi.advanceTimersByTimeAsync(2100);
+    await flush();
+    return { t, posts, fetch };
+  }
+
+  it("rings the agent from a backend poll, with the caller's number", async () => {
+    const { t } = await offered();
+    expect(t.el("incoming").hidden).toBe(false);
+    expect(t.el("incoming-from").textContent).toBe("+919999900001");
+  });
+
+  it("does not poll before the panel is registered", async () => {
+    // Nothing can be answered yet, so asking is pointless — and a banner shown
+    // before registration would offer a call the panel could not pick up.
+    const fetch = vi.fn(async url => ({
+      ok: true, status: 200,
+      json: async () => (String(url).includes("/agent/") ? AGENT_OK.body : {}),
+    }));
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/inbound-pending/"))).toBe(false);
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("accepting dials the CALLER's number, never the room name", async () => {
+    const { t, posts } = await offered();
+    t.el("acceptbtn").click();
+    await flush();
+
+    // The backend is told first, so it stops the no-answer timer before the
+    // leg arrives — otherwise a slow join races the caller into voicemail.
+    const accept = posts.find(p => p.url.includes("/inbound-accept"));
+    expect(accept).toBeTruthy();
+    expect(accept.body.agentId).toBe(SETTINGS.agent_id);
+
+    // An ordinary outgoing call — the direction Vobiz can actually route.
+    expect(t.ua.calls).toHaveLength(1);
+    expect(t.ua.calls[0].target).toBe(`sip:${OFFER.from}@registrar.vobiz.ai`);
+
+    // The regression this guards. Vobiz resolves every destination through its
+    // own routing service before anything else, and a room name comes back 500
+    // ("IncomingRoute ... status 500"), retried, then 486 Busy. Putting the room
+    // on the wire looks right and fails silently at the caller's ear.
+    expect(t.ua.calls[0].target).not.toContain(OFFER.room);
+
+    // Without STUN the offer carries host-only candidates and the leg is torn
+    // down before audio flows, exactly as on any other call the panel places.
+    expect(t.ua.calls[0].options.pcConfig.iceServers[0].urls).toContain("stun:stun.l.google.com:19302");
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("hands over the microphone taken while ringing, rather than asking again", async () => {
+    // The caller is on hold for all of this. JsSIP asks for a microphone inside
+    // call() and only starts gathering ICE once it has one, so leaving that
+    // until after the click adds to a delay the caller is already sitting
+    // through — on a measured call they hung up 1.5s after the agent arrived.
+    const { t } = await offered();
+    t.el("acceptbtn").click();
+    await flush();
+
+    expect(t.ua.calls[0].options.mediaStream).toBeTruthy();
+    // Passing both would have JsSIP ask for a second microphone it cannot use.
+    expect(t.ua.calls[0].options.mediaConstraints).toBeUndefined();
+  });
+
+  it("refuses to dial anything when the caller's number is unknown", async () => {
+    // A withheld number leaves nothing Vobiz can resolve. Falling back to the
+    // room name would reintroduce the 486 exactly as before, so nothing is
+    // dialled at all and the agent is told why.
+    const { t } = await offered({ ...OFFER, from: "" });
+    t.el("acceptbtn").click();
+    await flush();
+
+    expect(t.ua.calls).toHaveLength(0);
+    expect(t.text("callnum")).toMatch(/number is unknown/i);
+  });
+
+  it("declining tells the backend, so the caller reaches voicemail", async () => {
+    const { t, posts } = await offered();
+    t.el("declinebtn").click();
+    await flush();
+
+    expect(posts.some(p => p.url.includes("/inbound-decline"))).toBe(true);
+    // Declining must not place a call of any kind.
+    expect(t.ua.calls).toHaveLength(0);
+    expect(t.el("incoming").hidden).toBe(true);
+  });
+
+  it("stops offering once the banner is up, so the ring is not restarted", async () => {
+    // The poll keeps running while the agent decides. Re-showing the banner on
+    // every tick would restart the ringtone twice a second.
+    const { t, fetch } = await offered();
+    const before = fetch.mock.calls.filter(c => String(c[0]).includes("/inbound-pending/")).length;
+    await vi.advanceTimersByTimeAsync(4200);
+    await flush();
+    const after = fetch.mock.calls.filter(c => String(c[0]).includes("/inbound-pending/")).length;
+    expect(after).toBe(before);
+    expect(t.el("incoming").hidden).toBe(false);
+  });
+
+  it("survives the backend being unreachable mid-poll", async () => {
+    // Tunnels drop and laptops sleep. A failed poll is not worth a message in
+    // the panel; the next tick simply tries again.
+    const fetch = vi.fn(async url => {
+      const u = String(url);
+      if (u.includes("/inbound-pending/")) throw new Error("ECONNREFUSED");
+      return { ok: true, status: 200, json: async () => (u.includes("/agent/") ? AGENT_OK.body : {}) };
+    });
+    const t = await boot({ iparams: SETTINGS, fetch });
+    t.ua.emit("registered");
+    await vi.advanceTimersByTimeAsync(4200);
+    await flush();
+    expect(t.el("incoming").hidden).toBe(true);
+    expect(t.text("status")).not.toMatch(/ECONNREFUSED/);
+  });
+
+  it("says so when the caller hung up in the moment before Accept was clicked", async () => {
+    // A real race: the banner is up, the caller gives up, the agent clicks
+    // anyway. Dialling the room then joins an empty conference and sits there.
+    const fetch = vi.fn(async (url, options = {}) => {
+      const u = String(url);
+      const json =
+        u.includes("/agent/") ? AGENT_OK.body
+        : u.includes("/inbound-pending/") ? OFFER
+        : u.includes("/inbound-accept") ? { ok: false, reason: "no call is ringing" }
+        : {};
+      return { ok: true, status: 200, json: async () => json };
+    });
+    const t = await boot({ iparams: SETTINGS, fetch });
+    t.ua.emit("registered");
+    await vi.advanceTimersByTimeAsync(2100);
+    await flush();
+    expect(t.el("incoming").hidden).toBe(false);
+
+    t.el("acceptbtn").click();
+    await flush();
+
+    expect(t.ua.calls).toHaveLength(0);
+    expect(t.el("incoming").hidden).toBe(true);
+    expect(t.text("status-message")).toMatch(/no call is ringing/);
+  });
+
+  it("returns to Ready when the leg into the room fails", async () => {
+    const { t } = await offered();
+    t.el("acceptbtn").click();
+    await flush();
+
+    t.ua.calls[0].session.emit("failed", { cause: "Rejected" });
+    await flush();
+    // The cause belongs on screen. "Could not connect" with no reason is the
+    // kind of message that sends someone back to the logs for no good reason.
+    expect(t.text("callnum")).toMatch(/Rejected/);
   });
 });
