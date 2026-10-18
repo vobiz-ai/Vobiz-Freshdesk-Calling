@@ -28,9 +28,18 @@ This repository contains the Freshdesk panel (`app/`) and the calling backend
   `ALLOWED_ORIGINS`. Never `*`, never reflected.
 - **Webhook signatures** (`X-Vobiz-Signature-V3`) are checked; set
   `VOBIZ_WEBHOOK_SIGNATURE=require` in production once they verify.
-- **Secrets stay in `backend/.env`** (and `backend/agents.json` if used), both
-  gitignored and excluded from the packed app.
+- **No Vobiz credential is configured anywhere.** Agents sign in with their own
+  account; its Auth Token stays in the backend's memory, keyed by Auth ID, and
+  is never logged, written to disk or returned to the browser. SIP passwords
+  are random, rotated on every sign-in, and handed only to that session.
+- **`backend/data/endpoints.json` holds ids only** (`endpointId`, `username`),
+  mode 0600, gitignored and excluded from the packed app, like `backend/.env`.
+- **Recording links are account-scoped**: the Auth ID is inside the signed
+  payload, so a link minted for one account cannot fetch another's audio.
+- **SIP direct is unverifiable by the backend** — it has no account credentials
+  to check a typed endpoint against. It cannot take over an endpoint a Vobiz
+  account sign-in provisioned. Prefer account sign-in on a shared backend.
 
 If you run the backend, serve it over HTTPS on a stable hostname, set
-`SIGNING_SECRET`, and rotate the Vobiz Auth Token and SIP passwords if the host
-is ever exposed.
+`SIGNING_SECRET`, and have agents rotate their Vobiz Auth Token if the host is
+ever exposed (SIP passwords rotate on the next sign-in).

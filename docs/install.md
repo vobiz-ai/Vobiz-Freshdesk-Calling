@@ -7,9 +7,9 @@ minutes of upload.
 ## Before you start
 
 - Freshdesk on **Growth, Pro, or Enterprise**, and admin access.
-- The calling backend from `backend/` running on public HTTPS, with the Vobiz
-  application, endpoint and number pointed at it — see the
-  [README](../README.md#1-run-the-calling-backend).
+- The calling backend from `backend/` running on public HTTPS — see the
+  [README](../README.md#1-run-the-calling-backend). It needs no Vobiz account
+  configured: agents sign in with their own, and sign-in sets up their SIP line.
 - The [Freshworks CLI](https://developers.freshworks.com/docs/app-sdk/v3.0/common/basic-dev-tools/freshworks-cli/) (`fdk`)
   10.1.9 on Node 24.11.1.
 
@@ -74,15 +74,17 @@ All three settings can be changed without reinstalling.
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| "Sign in below to bring your phone line online" | Normal on every fresh open | Sign in with the Vobiz Auth ID and Auth Token |
+| "Sign in below to bring your phone line online" | Normal on every fresh open | Sign in on the **Vobiz account** tab with your Auth ID and Auth Token, or on **SIP direct** |
+| "Vobiz did not accept that Auth ID and Auth Token" | Vobiz refused the pair | Copy both again from the console's API credentials |
+| "Could not set up this agent's phone line" | Vobiz refused to create the application or endpoint | The backend log has Vobiz's status code |
 | "Not configured" | Setup was skipped or incomplete | Re-enter the settings via the path above |
 | "Backend URL must start with https://" | The URL is missing its scheme | Enter the full `https://…` URL |
 | "Cannot reach the calling backend" | The backend is down or the URL is wrong | Confirm the backend is running and reachable over public HTTPS |
-| Sign-in says "Unknown agent identity" | The backend uses an agents file that does not list this identity | Add it to the file, or use an identity it lists |
 | "Cannot reach the calling backend" right after install | The backend refused this page's origin | The backend log names the origin; add it to `ALLOWED_ORIGINS` |
-| "Registration failed" | The SIP credentials were rejected | Check `VOBIZ_SIP_USER` is the username the console shows *after* creation, and the password |
-| Calls ring but the customer is never dialled | The endpoint is not bound to an application whose answer URL is your backend | Click **Enable inbound calls**, or bind it in the console |
-| Inbound callers hear ringback, the panel never rings | The number is not attached to the application, or the panel is not open and registered | Click **Enable inbound calls**; keep the tab open |
+| "Registration failed" | The SIP credentials were rejected | Account sign-in: sign in again (it sets a fresh password). SIP direct: use the username the console shows *after* creation, and its password |
+| Calls ring but the customer is never dialled | The endpoint is not bound to an application whose answer URL is your backend | Account sign-in: the backend log says whether the bind verified. SIP direct: bind the endpoint in the console (README, *SIP direct*) |
+| Inbound callers hear ringback, the panel never rings | The number is not attached to the application, or the panel is not open and registered | Click **Enable inbound calls** (SIP direct: attach it in the console); keep the tab open |
+| "Sign in with your Vobiz account to use this" | Recordings and inbound setup need the account API, which SIP direct does not have | Use the **Vobiz account** tab |
 | Call button stays disabled | You are not logged in, or SIP is not registered | The hint under the button says which |
 | Connected but no audio | Microphone permission was blocked | Allow the microphone in the browser address bar, then reload |
 | Calls ring the wrong person | Two agents share an identity | Give each agent their own |

@@ -27,4 +27,6 @@ build/
 
 # Calling backend secrets
 backend/.env
-backend/agents.json
+
+# Endpoint map written by the backend (ids only)
+backend/data/
