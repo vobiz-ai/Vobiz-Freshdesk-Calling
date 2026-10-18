@@ -39,7 +39,6 @@ installation parameters at <http://localhost:10001/custom_configs>:
 | Setting | Value |
 | --- | --- |
 | Calling backend URL | `http://localhost:8092` |
-| Agent identity | anything, e.g. `priya` |
 | SIP registrar URL | leave blank |
 
 The mock backend accepts any Auth ID and Auth Token. Use the literal `fail` as

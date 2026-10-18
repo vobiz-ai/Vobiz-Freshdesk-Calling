@@ -1,13 +1,7 @@
 {
   "backend_url": {
     "display_name": "Calling backend URL",
-    "description": "The HTTPS base URL of your Vobiz calling backend, with no trailing slash — for example https://calling.example.com. See docs/backend-contract.md in the repository for what this service must implement.",
-    "type": "text",
-    "required": true
-  },
-  "agent_id": {
-    "display_name": "Agent identity",
-    "description": "Which agent this installation is, for example priya. On sign-in the backend gives each agent identity its own SIP line in the Vobiz account they sign in with. Each agent must use a different value, or calls will ring the wrong person.",
+    "description": "The HTTPS base URL of your Vobiz calling backend, with no trailing slash — for example https://calling.example.com. Each agent signs in to the panel with their own Freshdesk login, so there is nothing per agent to set here. See docs/backend-contract.md in the repository for what this service must implement.",
     "type": "text",
     "required": true
   },

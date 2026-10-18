@@ -215,6 +215,18 @@ const server = http.createServer(async (req, res) => {
     return log(method, path, 200, `agent=${agentId} (SIP direct)`);
   }
 
+  // POST /logout
+  if (path === "/logout" && method === "POST") {
+    await readJson(req).catch(() => ({}));
+    const h = String(req.headers.authorization || "");
+    const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+    const agentId = tokens.get(token);
+    tokens.delete(token);
+    if (agentId) sessions.delete(agentId);
+    send(res, 200, { ok: true });
+    return log(method, path, 200, agentId ? `agent=${agentId}` : "no session");
+  }
+
   // POST /select-number
   if (path === "/select-number" && method === "POST") {
     const { number } = await readJson(req).catch(() => ({}));

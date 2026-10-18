@@ -56,8 +56,12 @@ phone side's audio, while a REST-placed leg joined to a conference stays clean.
 That is why the conference is the default.
 
 With the conference, the agent's leg is answered by the room straight away, so
-the panel shows *On a call* — and the agent hears silence — until the customer
-picks up.
+JsSIP reports the call confirmed before the customer's phone has rung. The panel
+sends its own reference for the call as `X-VH-Call-Ref` on the INVITE; the
+backend keeps it on the room, and the panel polls `/call-status/<ref>`, showing
+*Ringing* until `/outbound-join` marks the customer as joined, then *On a call*.
+In `dial` mode and SIP direct there is no room to ask about, so the panel shows
+*On a call* as soon as its own leg is up.
 
 The reverse design — the backend dials the customer first, then rings the
 browser in — is not used: the REST API cannot originate a call to a WebRTC

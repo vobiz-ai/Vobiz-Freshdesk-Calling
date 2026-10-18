@@ -84,8 +84,10 @@ export class FakeSession {
  * @param {object}   opts
  * @param {object}   opts.iparams  installation settings the SDK returns
  * @param {Function} opts.fetch    fetch implementation for this test
+ * @param {*}        opts.user     what client.data.get("loggedInUser") resolves
+ *                                 to, or an Error for it to reject with
  */
-export async function boot({ iparams = {}, fetch: fetchImpl } = {}) {
+export async function boot({ iparams = {}, fetch: fetchImpl, user = LOGGED_IN_USER } = {}) {
   document.body.innerHTML = bodyMarkup();
 
   const events = {};
@@ -93,6 +95,13 @@ export async function boot({ iparams = {}, fetch: fetchImpl } = {}) {
 
   const client = {
     iparams: { get: vi.fn(async () => iparams) },
+    data: {
+      get: vi.fn(async key => {
+        if (key !== "loggedInUser") throw new Error(`unexpected data key ${key}`);
+        if (user instanceof Error) throw user;
+        return user;
+      }),
+    },
     events: { on: vi.fn((name, cb) => { events[name] = cb; }) },
     interface: { trigger: vi.fn((...args) => { triggers.push(args); }) },
   };
@@ -156,4 +165,7 @@ export function routes(map) {
 }
 
 export const AGENT_OK = { body: { displayName: "Priya", sipUser: "priya@registrar.vobiz.ai", sipPassword: "s3cret" } };
-export const SETTINGS = { backend_url: "https://backend.example.com", agent_id: "priya" };
+export const SETTINGS = { backend_url: "https://backend.example.com" };
+// The Freshdesk agent logged in to the browser. The panel's identity is fd<id>.
+export const LOGGED_IN_USER = { loggedInUser: { id: 1001, contact: { name: "Priya", email: "priya@example.com" } } };
+export const AGENT = "fd1001";

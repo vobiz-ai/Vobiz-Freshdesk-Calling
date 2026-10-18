@@ -99,6 +99,7 @@
           </div>
 
           <p id="vobiz-login-status" class="hint">Not signed in.</p>
+          <button id="signout-btn" class="btn btn-secondary" hidden>Sign out</button>
         </section>
 
         <!-- Step 2 — caller ID -->
@@ -198,11 +199,19 @@
         </summary>
 
         <div class="faq-item">
-          <h3>Why does the person I call hear ringing after answering?</h3>
+          <h3>What happens when I place a call?</h3>
           <p>
-            Vobiz dials the customer first, then bridges your browser in. Those
-            few seconds of ringback are that second leg connecting. It is
-            expected, and the call order cannot be reversed.
+            Your browser's call goes into a private conference room on Vobiz
+            first, then Vobiz dials the customer into that room. While their
+            phone rings the panel shows <strong>Ringing</strong>, and it switches
+            to <strong>On a call</strong> when they answer. If they never answer,
+            the call ends on its own.
+          </p>
+          <p>
+            Signed in with <strong>SIP direct</strong>, the panel cannot see the
+            customer's leg, so it shows <strong>On a call</strong> as soon as
+            Vobiz picks up your side — even while the customer's phone is still
+            ringing.
           </p>
         </div>
 
@@ -212,6 +221,16 @@
             Calling needs both a signed-in account and a live SIP registration.
             The hint under the button says which one is missing. Dialling
             without registration would connect the customer to silence.
+          </p>
+        </div>
+
+        <div class="faq-item">
+          <h3>Who am I signed in as?</h3>
+          <p>
+            Your own Freshdesk agent login decides which phone line you get, so
+            colleagues on the same Vobiz account each have their own and never
+            sign each other out. <strong>Sign out</strong> takes your line
+            offline, and inbound calls stop ringing this browser.
           </p>
         </div>
 

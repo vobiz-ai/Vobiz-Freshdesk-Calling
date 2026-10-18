@@ -38,7 +38,7 @@ HTTPS (or `http://localhost` for development) and strips trailing slashes.
 ### `POST /login`
 
 ```json
-{ "agentId": "priya", "authId": "MA_XXXXXXXX", "authToken": "..." }
+{ "agentId": "fd1001", "displayName": "Priya", "authId": "MA_XXXXXXXX", "authToken": "..." }
 ```
 
 Any Vobiz account. The backend:
@@ -73,7 +73,7 @@ on `POST /setup-inbound`.
 ### `POST /login-sip` — SIP direct
 
 ```json
-{ "agentId": "priya", "sipUser": "endpointusername", "sipPassword": "...", "callerId": "+91XXXXXXXXXX" }
+{ "agentId": "fd1001", "displayName": "Priya", "sipUser": "endpointusername", "sipPassword": "...", "callerId": "+91XXXXXXXXXX" }
 ```
 
 No account credentials, so nothing is provisioned or checked with the API: the
@@ -94,8 +94,15 @@ panel hides them.
 The SIP identity the panel registers as.
 
 ```json
-{ "displayName": "priya", "sipUser": "fdpriya1a2b3c@registrar.vobiz.ai", "sipPassword": "..." }
+{ "displayName": "Priya", "sipUser": "fdfd10011a2b3c@registrar.vobiz.ai", "sipPassword": "..." }
 ```
+
+`agentId` is `fd<Freshdesk user ID>` — the panel reads the logged-in agent with
+`client.data.get("loggedInUser")`, so each Freshdesk agent has their own
+endpoint. The backend accepts 1–64 letters, digits, `.`, `_` or `-`, starting
+with a letter or digit, and refuses anything else with `400`. `/login` and
+`/login-sip` also take an optional `displayName` (the agent's Freshdesk name),
+returned here for the status line.
 
 `sipUser` is a full `user@domain`; the panel builds `sip:${sipUser}`. Before
 sign-in this returns `401`, and the panel shows *Signed out* until it has a
@@ -112,7 +119,7 @@ token.
 ### `POST /select-number` — *token required*
 
 ```json
-{ "agentId": "priya", "number": "+91XXXXXXXXXX" }
+{ "agentId": "fd1001", "number": "+91XXXXXXXXXX" }
 ```
 
 → `{ "selected": "+91XXXXXXXXXX" }`. A number not in the account's list is
@@ -121,20 +128,26 @@ remembered for the agent's next sign-in.
 
 ### `POST /setup-inbound` — *token required*
 
-→ `{ "number": "+91XXXXXXXXXX", "appId": "...", "previousAppId": "...", "endpointBound": true }`
+→ `{ "number": "+91XXXXXXXXXX", "appId": "...", "previousAppId": "...", "previousAppName": "My IVR", "endpointBound": true }`
 
 The **Enable inbound calls** button. Attaches the agent's selected number to
 this integration's application (`POST /numbers/%2B<digits>/application` with
 `{"application_id": "<id>"}`), in the agent's own account, and re-checks the
 endpoint binding. It is explicit because it moves the number off whatever
-application it was on — `previousAppId` names it.
+application it was on — `previousAppId` and `previousAppName` name it. The
+request body is empty; the session says which agent and number.
+
+`numberDetails` (from `/login` and `/session`) carries, per number,
+`applicationId`, `applicationName` (looked up with `GET /Application/`, `null`
+if not found) and `thisPanel` (already on this integration's application), which
+the panel uses for its "Enable inbound calls" hint.
 
 ### `GET /recordings/{agentId}?limit=15` — *token required*
 
 ```json
 { "objects": [ {
   "recording_id": "...", "add_time": "2026-09-14 10:30:00", "rounded_recording_duration": 42,
-  "playUrl": "/recording-audio/priya/<id>?account=MA_XXXXXXXX&exp=1760000000&sig=<hmac>"
+  "playUrl": "/recording-audio/fd1001/<id>?account=MA_XXXXXXXX&exp=1760000000&sig=<hmac>"
 } ] }
 ```
 
@@ -149,24 +162,32 @@ instead: HMAC-SHA256 over `authId|agentId|recordingId|exp` with
 `SIGNING_SECRET`, valid for `RECORDING_URL_TTL_SECONDS` (default 300). The Auth
 ID is in the signed payload, so one account's link can never fetch another
 account's audio, and the audio is fetched with that account's credentials.
-After a backend restart, a link for an account nobody has signed in to since
-answers `401` "sign in again".
+When nobody from that account is signed in (after the last sign-out, a session
+expiry or a restart) a link answers `401` "sign in again".
 
 The backend looks the recording up by ID and fetches the audio itself. It only
 fetches from Vobiz media hosts (and object storage they redirect to), and only
 sends the account credentials to `*.vobiz.ai`. **There is no route that fetches
 a URL the caller names** — that would be an open proxy carrying your Auth Token.
 
-### `GET /call-status/{callUuid}` — *token required*
+### `GET /call-status/{callRef}` — *token required*
 
-→ `{ "active": true }`. The panel does not currently call this route.
+During an outbound call the panel polls this with the `X-VH-Call-Ref` it put on
+the INVITE (8–64 letters, digits or dashes). While the customer's leg is still
+ringing → `{ "active": true, "state": "ringing" }`; once they join the room →
+`{ "active": true, "state": "connected" }`. Only the agent who placed the call
+gets an answer for it. Anything else is treated as a Vobiz CallUUID and answered
+`{ "active": <live?> }` with no `state`, which the panel shows as *On a call*.
 
 ### `POST /logout` — *token required*
 
-Ends the session. When it was the last live session for that account, and no
-outbound room for the account is open, the backend also forgets the account's
-Auth Token. The panel has no sign-out button today, so in practice tokens stay
-in memory until the backend restarts.
+The panel's **Sign out** button. Ends the session and stops routing calls to the
+agent's SIP user; the panel then unregisters. When no live session of that
+account remains, the backend forgets the account's Auth Token — straight away,
+or once the last outbound room of that account has ended (its hangup webhook
+may need to release the agent's leg as the account). Sessions that expire
+(`SESSION_TTL_HOURS`) and rooms whose hangup webhook never arrives (after the
+4-hour call limit) are swept the same way, on every request and once a minute.
 
 ### `POST /start-call` — *retired*
 
@@ -247,7 +268,7 @@ dialable CLI.
 <Response>
   <Dial callerId="+91XXXXXXXXXX" timeout="30" timeLimit="14400"
         action="https://calling.example.com/dial-status" method="POST" redirect="false">
-    <User>sip:fdpriya1a2b3c@registrar.vobiz.ai</User>
+    <User>sip:fdfd10011a2b3c@registrar.vobiz.ai</User>
   </Dial>
 </Response>
 ```

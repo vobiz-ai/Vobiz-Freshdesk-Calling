@@ -6,6 +6,19 @@ All notable changes to this app are documented here. This project follows
 ## [1.1.0] — Unreleased
 
 ### Added
+- **Per-agent identity.** The *Agent identity* installation parameter is gone.
+  The panel reads the logged-in Freshdesk agent (`client.data.get("loggedInUser")`)
+  and signs in as `fd<user ID>`, so agents sharing a Vobiz account each get their
+  own SIP line and no longer sign each other out. The backend validates the
+  format. Existing installs get a new endpoint per agent on first sign-in.
+- **Sign out** in the panel: calls `/logout`, unregisters SIP and returns to
+  *Signed out*. The backend drops an account's Auth Token when its last session
+  ends or expires, once any outbound call of that account has ended.
+- **Ringing → On a call** for outbound calls over the conference bridge: the
+  panel tags the INVITE with `X-VH-Call-Ref` and polls `/call-status` until the
+  customer joins.
+- The "Enable inbound calls" hint names the number's current application (ID
+  as a fallback), or says it already rings this panel.
 - **Any Vobiz account can sign in.** The backend no longer holds an account:
   `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN`, `VOBIZ_FROM_NUMBER`, `VOBIZ_SIP_USER`,
   `VOBIZ_SIP_PASSWORD` and `AGENTS_FILE` are gone. Sign-in checks the pair with

@@ -184,9 +184,22 @@ function withIntegerField(obj, field, digits) {
   return `${json === "{}" ? "{" : `${json.slice(0, -1)},`}"${field}":${digits}}`;
 }
 
-// Auth IDs go into URL paths, agent ids into endpoint usernames and map keys.
+// Auth IDs go into URL paths, agent ids into endpoint usernames, aliases, map
+// keys and recording links. The panel sends `fd<Freshdesk user id>`.
 const AUTH_ID_RE = /^[A-Za-z0-9_]{2,64}$/;
-const AGENT_ID_RE = /^[^\s/:]{1,64}$/;
+const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const AGENT_ID_ERROR = "The agent identity must be 1–64 letters, digits, dots, dashes or underscores, starting with a letter or digit";
+// The panel's own reference for one outbound call, sent as X-VH-Call-Ref so it
+// can ask /call-status whether the customer has joined yet.
+const CALL_REF_RE = /^[A-Za-z0-9-]{8,64}$/;
+// A conference room outlives its timeLimit by no more than this.
+const ROOM_MAX_AGE_MS = (14400 + 300) * 1000;
+
+/** A name to show in the panel: printable, trimmed, at most 64 characters. */
+function cleanDisplayName(raw, fallback) {
+  const s = String(raw || "").replace(/[\u0000-\u001f\u007f<>]/g, "").trim().slice(0, 64);
+  return s || fallback;
+}
 
 // ─── endpoint map ────────────────────────────────────────────────────────────
 
@@ -226,7 +239,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
   const accounts = new Map();
   const sessions = new Map();        // token -> { authId, agentId, sipUser, sipUsername, sipPassword, numbers, from, createdAt }
   const bySipUser = new Map();       // SIP username -> { authId, agentId, callerId }
-  const rooms = new Map();           // outbound room -> { authId, agentCallUuid, joined, createdAt }
+  const rooms = new Map();           // outbound room -> { authId, sipUsername, callRef, agentCallUuid, joined, createdAt }
   const lastCallerId = new Map();    // authId:agentId -> the caller ID the agent last picked
   const store = createEndpointStore(config.dataDir);
   const answerUrl = `${config.publicBase}/answer`;
@@ -291,6 +304,32 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       log(`  created application ${appId} → ${answerUrl} in ${acct.authId}`);
       return appId;
     });
+  }
+
+  /** app_id -> app_name for every application in the account, for the panel's hints. */
+  async function applicationNames(acct) {
+    const names = {};
+    for (let offset = 0; offset < 1000; offset += 100) {
+      const r = await vobiz(acct, "GET", `/Application/?limit=100&offset=${offset}`);
+      if (!ok(r)) break;
+      const objects = (r.body && r.body.objects) || [];
+      for (const a of objects) if (a && isDigits(a.app_id) && a.app_name) names[String(a.app_id)] = String(a.app_name).slice(0, 80);
+      if (objects.length < 100) break;
+    }
+    return names;
+  }
+
+  /**
+   * Name each number's current application, and say whether it is already
+   * this integration's, so "Enable inbound calls" can say what it would change.
+   */
+  async function describeNumberApps(acct, details, appId) {
+    const others = details.some(d => d.applicationId && d.applicationId !== appId);
+    const names = others ? await applicationNames(acct) : {};
+    for (const d of details) {
+      d.applicationName = d.applicationId ? names[d.applicationId] || null : null;
+      d.thisPanel = Boolean(d.applicationId) && d.applicationId === appId;
+    }
   }
 
   async function readEndpoint(acct, endpointId) {
@@ -400,12 +439,44 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
   // ── sessions ──────────────────────────────────────────────────────────────
   const fresh = s => Date.now() - s.createdAt <= config.sessionTtlMs;
 
+  /**
+   * Forget an account's Auth Token once nothing needs it: no live session of
+   * that account, and no outbound room of that account still waiting for its
+   * hangup webhook (which may have to release the agent's leg as the account,
+   * and whose signature is checked with the account's token).
+   */
+  function releaseAccountIfIdle(authId) {
+    if (!authId || !accounts.has(authId)) return;
+    if ([...sessions.values()].some(s => s.mode === "account" && s.authId === authId && fresh(s))) return;
+    if ([...rooms.values()].some(r => r.authId === authId)) return;
+    accounts.delete(authId);
+    log(`  ${authId}: no agent signed in — Auth Token dropped from memory`);
+  }
+
   function dropSession(token) {
     const s = sessions.get(token);
     if (!s) return;
     sessions.delete(token);
     const route = bySipUser.get(s.sipUsername);
     if (route && route.token === token) bySipUser.delete(s.sipUsername);
+    if (s.mode === "account") releaseAccountIfIdle(s.authId);
+  }
+
+  function dropRoom(name) {
+    const room = rooms.get(name);
+    if (!room) return;
+    rooms.delete(name);
+    releaseAccountIfIdle(room.authId);
+  }
+
+  /**
+   * Expire what nobody will come back for: sessions past SESSION_TTL_HOURS (a
+   * tab closed without signing out) and rooms whose hangup webhook never came.
+   * Runs on every request and on a timer, so an idle backend forgets too.
+   */
+  function sweep() {
+    for (const [t, s] of sessions) if (!fresh(s)) dropSession(t);
+    for (const [name, r] of rooms) if (Date.now() - r.createdAt > ROOM_MAX_AGE_MS) dropRoom(name);
   }
 
   function getSession(req) {
@@ -588,7 +659,15 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
     }
 
     const room = `fd${agentCallUuid.replace(/[^a-z0-9]/gi, "") || crypto.randomBytes(8).toString("hex")}`;
-    rooms.set(room, { authId: acct.authId, agentCallUuid, joined: false, createdAt: Date.now() });
+    const ref = vhParam(p, "X-VH-Call-Ref");
+    rooms.set(room, {
+      authId: acct.authId,
+      sipUsername: user,
+      callRef: CALL_REF_RE.test(ref) ? ref : null,
+      agentCallUuid,
+      joined: false,
+      createdAt: Date.now(),
+    });
     log(`  → outbound (conference ${room}) ${user} → ${destination} as ${callerId}`);
 
     const q = `room=${encodeURIComponent(room)}`;
@@ -603,7 +682,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
     });
     if (!ok(placed)) {
       log(`  ✖ Vobiz refused the customer leg: ${placed.status} ${JSON.stringify(placed.body).slice(0, 200)}`);
-      rooms.delete(room);
+      dropRoom(room);
       return xmlDoc('<Speak>The call could not be placed.</Speak><Hangup/>');
     }
 
@@ -674,13 +753,14 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
     const did = session.from;
     const before = (acct.details || []).find(d => d.e164 === did);
     const previousAppId = before && before.applicationId !== appId ? before.applicationId : null;
+    const previousAppName = previousAppId ? before.applicationName || null : null;
     const attached = await vobiz(acct, "POST", `/numbers/%2B${did.replace(/\D/g, "")}/application`, { application_id: appId });
     if (!ok(attached)) return { error: `Vobiz returned ${attached.status} attaching ${did}` };
     const stored = store.get(`${acct.authId}:${session.agentId}`);
     let endpointBound = false;
     if (stored) endpointBound = (await bindEndpoint(acct, stored.endpointId, appId)).bound;
-    if (before) before.applicationId = appId;
-    return { number: did, appId, previousAppId, endpointBound };
+    if (before) Object.assign(before, { applicationId: appId, applicationName: config.appName, thisPanel: true });
+    return { number: did, appId, previousAppId, previousAppName, endpointBound };
   }
 
   // ── HTTP ──────────────────────────────────────────────────────────────────
@@ -737,7 +817,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
     const authId = String(body.authId || "").trim();
     const authToken = String(body.authToken || "").trim();
     if (!agentId || !authId || !authToken) return [400, { error: "agentId, authId and authToken are all required" }];
-    if (!AGENT_ID_RE.test(agentId)) return [400, { error: "The agent identity must be 1–64 characters with no spaces, slashes or colons" }];
+    if (!AGENT_ID_RE.test(agentId)) return [400, { error: AGENT_ID_ERROR }];
     if (!AUTH_ID_RE.test(authId)) return [401, { error: "That is not a Vobiz Auth ID" }];
     if (!/^https:\/\//.test(config.publicBase)) return [500, { error: "This backend has no PUBLIC_BASE — it must be the public https URL Vobiz reaches it on" }];
 
@@ -762,11 +842,8 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       return [502, { error: `Could not set up this agent's phone line: ${err.message}` }];
     }
 
+    await describeNumberApps(acct, details, agent.appId);
     accounts.set(authId, { authId, authToken, numbers, details, appId: agent.appId });
-
-    // The password just rotated, so any older session for this agent holds a
-    // dead one. This sign-in replaces it.
-    for (const [t, s] of sessions) if (s.mode === "account" && s.authId === authId && s.agentId === agentId) dropSession(t);
 
     // The agent's last pick, if it is still on the account; otherwise the first.
     const last = lastCallerId.get(`${authId}:${agentId}`);
@@ -776,7 +853,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       mode: "account",
       authId,
       agentId,
-      displayName: agentId,
+      displayName: cleanDisplayName(body.displayName, agentId),
       sipUsername: agent.username,
       sipUser: fullSipUser(agent.username),
       sipPassword: agent.password,
@@ -785,6 +862,10 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       createdAt: Date.now(),
     });
     bySipUser.set(agent.username, { mode: "account", authId, agentId, callerId: from, token });
+    // The password just rotated, so any older session for this agent holds a
+    // dead one. This sign-in replaces it. (After the new session exists, so the
+    // account is never momentarily idle and its token dropped.)
+    for (const [t, s] of sessions) if (t !== token && s.mode === "account" && s.authId === authId && s.agentId === agentId) dropSession(t);
     log(`login ok — agent "${agentId}" on ${authId}, endpoint ${agent.endpointId}, ${numbers.length} number(s)`);
     return [200, { token, mode: "account", numbers, numberDetails: details, selected: from }];
   }
@@ -804,7 +885,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
     const sipPassword = String(body.sipPassword || "");
     const callerId = cleanPhone(body.callerId);
     if (!agentId || !username || !sipPassword || !body.callerId) return [400, { error: "agentId, sipUser, sipPassword and callerId are all required" }];
-    if (!AGENT_ID_RE.test(agentId)) return [400, { error: "The agent identity must be 1–64 characters with no spaces, slashes or colons" }];
+    if (!AGENT_ID_RE.test(agentId)) return [400, { error: AGENT_ID_ERROR }];
     if (!/^[A-Za-z0-9]+$/.test(username)) return [400, { error: "A Vobiz SIP username is letters and digits only" }];
     if (!callerId) return [400, { error: "The caller ID must be a phone number in E.164, like +91XXXXXXXXXX" }];
     const existing = bySipUser.get(username);
@@ -818,7 +899,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       mode: "sip",
       authId: null,
       agentId,
-      displayName: agentId,
+      displayName: cleanDisplayName(body.displayName, agentId),
       sipUsername: username,
       sipUser,
       sipPassword,
@@ -831,7 +912,8 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
     return [200, { token, mode: "sip", numbers: [callerId], selected: callerId }];
   }
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
+    sweep();
     const origin = req.headers.origin;
     const cors = { Vary: "Origin" };
     if (originAllowed(origin, config.allowedOrigins)) {
@@ -906,12 +988,12 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
           // release the agent, who is sitting alone in a room that stays open.
           const room = rooms.get(q.room);
           if (room) {
-            rooms.delete(q.room);
             const acct = accounts.get(room.authId);
             if (!room.joined && room.agentCallUuid && acct) {
               log(`  customer never answered (${params.HangupCause || params.CallStatus || "?"}) — releasing the agent's leg`);
               await vobiz(acct, "DELETE", `/Call/${encodeURIComponent(room.agentCallUuid)}/`);
             }
+            dropRoom(q.room);
           }
           return send(200, EMPTY_XML);
         }
@@ -954,7 +1036,7 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
         const authId = String(q.account || "");
         if (!verifyRecording(authId, agentId, recordingId, q.exp, q.sig)) return send(403, { error: "Invalid or expired playback link" });
         const acct = accounts.get(authId);
-        if (!acct) return send(401, { error: "Nobody has signed in to this Vobiz account since the backend restarted — sign in to the panel again" });
+        if (!acct) return send(401, { error: "Nobody is signed in to this Vobiz account right now — sign in to the panel again" });
         const meta = await vobiz(acct, "GET", `/Recording/${encodeURIComponent(recordingId)}/`);
         const src = meta.status === 200 && meta.body && meta.body.recording_url;
         if (!src) return send(404, { error: "No audio for that recording" });
@@ -973,12 +1055,9 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       }
 
       if (p === "/logout" && method === "POST") {
+        // The last agent of an account out takes the account's Auth Token with
+        // them — once any call they still have in a room has ended.
         for (const [t, s] of sessions) if (s === session) dropSession(t);
-        // The last agent of an account out takes the account's token with them.
-        if (session.mode === "account" && !liveSessions(session.authId).length &&
-            ![...rooms.values()].some(r => r.authId === session.authId)) {
-          accounts.delete(session.authId);
-        }
         return send(200, { ok: true });
       }
 
@@ -1012,7 +1091,15 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       }
 
       if ((m = p.match(/^\/call-status\/([^/]+)$/)) && method === "GET") {
-        const r = await vobiz(acct, "GET", `/Call/${encodeURIComponent(decodeURIComponent(m[1]))}/?status=live`);
+        const id = decodeURIComponent(m[1]);
+        // The panel's X-VH-Call-Ref for an outbound call: say whether the
+        // customer has joined the agent's room yet. Only the agent who placed
+        // the call can ask.
+        if (CALL_REF_RE.test(id)) {
+          const room = [...rooms.values()].find(r => r.callRef === id && r.authId === session.authId && r.sipUsername === session.sipUsername);
+          if (room) return send(200, { active: true, state: room.joined ? "connected" : "ringing" });
+        }
+        const r = await vobiz(acct, "GET", `/Call/${encodeURIComponent(id)}/?status=live`);
         return send(200, { active: r.status === 200 });
       }
 
@@ -1036,6 +1123,10 @@ function createApp(config, { fetchImpl = globalThis.fetch, log = console.log } =
       return send(500, { error: "Internal error" });
     }
   });
+  const sweeper = setInterval(sweep, 60 * 1000);
+  sweeper.unref();
+  server.on("close", () => clearInterval(sweeper));
+  return server;
 }
 
 module.exports = { createApp, readConfig, loadDotEnv, originAllowed, toE164, fullSipUser, parseVobizJson, withIntegerField, cleanPhone, vhParam };

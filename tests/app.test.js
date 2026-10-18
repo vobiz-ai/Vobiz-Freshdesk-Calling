@@ -7,20 +7,20 @@ beforeEach(() => {
 });
 
 describe("configuration", () => {
-  it("refuses to start without both required settings", async () => {
-    const t = await boot({ iparams: { backend_url: "https://backend.example.com" } });
+  it("refuses to start without a backend URL", async () => {
+    const t = await boot({ iparams: {} });
     expect(t.text("status-message")).toMatch(/not configured/i);
   });
 
   it("rejects a backend URL with no scheme", async () => {
     // A bare hostname resolves against the Freshdesk app origin and 404s
     // silently, which reads as "the backend is down" rather than a typo.
-    const t = await boot({ iparams: { backend_url: "backend.example.com", agent_id: "priya" } });
+    const t = await boot({ iparams: { backend_url: "backend.example.com" } });
     expect(t.text("status-message")).toMatch(/must start with https/i);
   });
 
   it("rejects a plaintext http backend URL", async () => {
-    const t = await boot({ iparams: { backend_url: "http://backend.example.com", agent_id: "priya" } });
+    const t = await boot({ iparams: { backend_url: "http://backend.example.com" } });
     expect(t.text("status-message")).toMatch(/must start with https/i);
   });
 
@@ -29,26 +29,26 @@ describe("configuration", () => {
     // serves plain HTTP. Without this the panel bails out of init() before the
     // Log in button is wired up, so the button silently does nothing.
     const fetch = routes({ "/agent/": AGENT_OK });
-    const t = await boot({ iparams: { backend_url: "http://localhost:8092", agent_id: "priya" }, fetch });
+    const t = await boot({ iparams: { backend_url: "http://localhost:8092" }, fetch });
     expect(t.text("status-message")).not.toMatch(/must start with https/i);
-    expect(String(fetch.mock.calls[0][0])).toBe("http://localhost:8092/agent/priya");
+    expect(String(fetch.mock.calls[0][0])).toBe("http://localhost:8092/agent/fd1001");
   });
 
   it("accepts http://127.0.0.1 as well", async () => {
     const fetch = routes({ "/agent/": AGENT_OK });
-    const t = await boot({ iparams: { backend_url: "http://127.0.0.1:8092", agent_id: "priya" }, fetch });
+    const t = await boot({ iparams: { backend_url: "http://127.0.0.1:8092" }, fetch });
     expect(t.text("status-message")).not.toMatch(/must start with https/i);
   });
 
   it("still rejects a non-local http host that merely contains localhost", async () => {
-    const t = await boot({ iparams: { backend_url: "http://localhost.evil.example", agent_id: "priya" } });
+    const t = await boot({ iparams: { backend_url: "http://localhost.evil.example" } });
     expect(t.text("status-message")).toMatch(/must start with https/i);
   });
 
   it("strips trailing slashes from the backend URL", async () => {
     const fetch = routes({ "/agent/": AGENT_OK });
     await boot({ iparams: { ...SETTINGS, backend_url: "https://backend.example.com///" }, fetch });
-    expect(String(fetch.mock.calls[0][0])).toBe("https://backend.example.com/agent/priya");
+    expect(String(fetch.mock.calls[0][0])).toBe("https://backend.example.com/agent/fd1001");
   });
 
   it("uses the configured registrar when one is given", async () => {
@@ -84,7 +84,7 @@ describe("status is a short state plus a separate message", () => {
   it("keeps the header badge short even when the message is a sentence", async () => {
     // Regression: the badge had white-space:nowrap and was fed 70-character
     // sentences, which overflowed the 300px panel.
-    const t = await boot({ iparams: { backend_url: "backend.example.com", agent_id: "priya" } });
+    const t = await boot({ iparams: { backend_url: "backend.example.com" } });
     expect(t.text("status")).toBe("Offline");
     expect(t.text("status").length).toBeLessThan(16);
     expect(t.text("status-message")).toMatch(/must start with https/i);
@@ -467,13 +467,13 @@ describe("the session token", () => {
       fetch: routes({
         "/agent/": AGENT_OK,
         "/session/": { body: { loggedIn: true, numbers: ["+910000000001"], from: "+910000000001", authId: "MA_TEST0001" } },
-        "/recordings/": { body: { objects: [{ recording_id: "rec_a", playUrl: "/recording-audio/priya/rec_a?exp=9&sig=abc" }] } },
+        "/recordings/": { body: { objects: [{ recording_id: "rec_a", playUrl: "/recording-audio/fd1001/rec_a?exp=9&sig=abc" }] } },
       }),
     });
     await flush();
     const audio = t.el("vobiz-playback-audio");
     audio.play = vi.fn(() => Promise.resolve());
     t.el("call-history-list").querySelector("button").click();
-    expect(audio.src).toBe("https://backend.example.com/recording-audio/priya/rec_a?exp=9&sig=abc");
+    expect(audio.src).toBe("https://backend.example.com/recording-audio/fd1001/rec_a?exp=9&sig=abc");
   });
 });
