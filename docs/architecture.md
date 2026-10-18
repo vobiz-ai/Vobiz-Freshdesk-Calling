@@ -31,7 +31,7 @@ integration is entirely a function of how much the app chooses to write back.
 | `client.interface.trigger("show", {id:"softphone"})` | Open the panel when a call starts |
 
 That is the whole Freshworks surface today. The app does not currently read or
-write tickets — see [what is missing](#what-is-missing).
+write tickets — see [extending it](#extending-it-writing-back-to-freshdesk).
 
 ## An outbound call, end to end
 
@@ -51,9 +51,13 @@ write tickets — see [what is missing](#what-is-missing).
 
 `OUTBOUND_MODE=dial` replaces steps 4–5 with a single `<Dial><Number>`, and
 SIP-direct agents always get it, since there are no account credentials for the
-REST leg. It is
-simpler, but a `<Dial>` bridged from a WebRTC leg was measured losing the phone
-side's audio on three of five calls, which is why the conference is the default.
+REST leg. It is simpler, but a `<Dial>` bridged from a WebRTC leg can lose the
+phone side's audio, while a REST-placed leg joined to a conference stays clean.
+That is why the conference is the default.
+
+With the conference, the agent's leg is answered by the room straight away, so
+the panel shows *On a call* — and the agent hears silence — until the customer
+picks up.
 
 The reverse design — the backend dials the customer first, then rings the
 browser in — is not used: the REST API cannot originate a call to a WebRTC
@@ -71,7 +75,8 @@ reaches `/answer` with a plain number in `From` and the account in
 <Dial callerId="<the dialled number>" …><User>sip:<agent endpoint></User>…</Dial>
 ```
 
-Vobiz rings the registered browsers, and the panel answers automatically.
+Vobiz rings the registered browsers, and the first panel to pick up answers
+automatically — there is no Accept or Decline yet.
 
 Two things this depends on, both handled:
 
@@ -109,10 +114,11 @@ session.on("peerconnection", e => bindTrack(e.peerconnection));
 bindTrack(session.connection);   // no-op on the incoming path
 ```
 
-## What is missing
+## Extending it: writing back to Freshdesk
 
 The app is a softphone that lives inside Freshdesk rather than an integration
-with Freshdesk's data. Closing that gap means using the Freshdesk REST API v2 —
+with Freshdesk's data — it writes nothing back (see the README's
+[Limitations](../README.md#limitations)). Closing that gap means using the Freshdesk REST API v2 —
 there is no call or activity object for third-party apps, so calls become
 ordinary tickets and notes:
 

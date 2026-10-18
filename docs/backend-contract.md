@@ -138,6 +138,9 @@ application it was on — `previousAppId` names it.
 } ] }
 ```
 
+These are the account's most recent recordings — every agent's calls on that
+Vobiz account, not only this agent's.
+
 ### `GET /recording-audio/{agentId}/{recordingId}?account=…&exp=…&sig=…`
 
 The audio. The panel assigns `playUrl` directly to an `<audio>` element, which
@@ -156,7 +159,14 @@ a URL the caller names** — that would be an open proxy carrying your Auth Toke
 
 ### `GET /call-status/{callUuid}` — *token required*
 
-→ `{ "active": true }`
+→ `{ "active": true }`. The panel does not currently call this route.
+
+### `POST /logout` — *token required*
+
+Ends the session. When it was the last live session for that account, and no
+outbound room for the account is open, the backend also forgets the account's
+Auth Token. The panel has no sign-out button today, so in practice tokens stay
+in memory until the backend restarts.
 
 ### `POST /start-call` — *retired*
 
@@ -207,10 +217,10 @@ POST /api/v1/Account/{the agent's auth_id}/Call/
 ```
 
 Why not `<Dial><Number>`? It is simpler, and it is available as
-`OUTBOUND_MODE=dial`. But a `<Dial><Number>` bridged from a WebRTC leg was
-measured losing the phone side's audio on three of five calls, while a
-REST-placed leg joined to a conference measured clean. A failed call still
-rings, answers and bills, with nobody able to hear anything.
+`OUTBOUND_MODE=dial`. But a `<Dial><Number>` bridged from a WebRTC leg can lose
+the phone side's audio, while a REST-placed leg joined to a conference stays
+clean. A call that loses audio still rings, answers and bills, with nobody able
+to hear anything.
 
 `OUTBOUND_MODE=dial` answers — and SIP-direct agents always get this, since
 there are no account credentials to place a REST leg with:

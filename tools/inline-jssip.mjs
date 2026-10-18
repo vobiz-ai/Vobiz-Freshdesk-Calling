@@ -3,8 +3,8 @@
  *
  * FDK lints every .js file under app/ — vendored dependencies included — and
  * neither .fdkignore, .eslintignore, nor relocating the file exempts it. JsSIP
- * uses `var` 901 times, which is 989 lint errors and an aborted `fdk pack`
- * (ISSUES.md #2). FDK does not lint inline <script>, so packing a copy of the
+ * uses `var` 901 times, which is 989 lint errors and an aborted `fdk pack`.
+ * FDK does not lint inline <script>, so packing a copy of the
  * app with the bundle inlined clears the block without touching the library's
  * semantics — verified: 0 lint errors, 0 platform errors.
  *
