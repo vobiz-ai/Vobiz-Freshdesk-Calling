@@ -7,7 +7,7 @@
   },
   "agent_id": {
     "display_name": "Agent identity",
-    "description": "Which agent identity this installation registers as. Your calling backend maps this value to a SIP user. Each agent must use a different value, or calls will ring the wrong person.",
+    "description": "Which agent this installation is, for example priya. On sign-in the backend gives each agent identity its own SIP line in the Vobiz account they sign in with. Each agent must use a different value, or calls will ring the wrong person.",
     "type": "text",
     "required": true
   },

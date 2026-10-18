@@ -36,7 +36,7 @@ rsync -a \
   --exclude build \
   --exclude coverage \
   --exclude '.env' \
-  --exclude 'backend/agents.json' \
+  --exclude 'backend/data' \
   "$ROOT/" "$BUILD/"
 
 # Symlinked, not copied: fdk pack runs `npm run fdk-unit-test` in the build dir.

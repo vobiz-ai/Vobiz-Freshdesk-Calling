@@ -32,23 +32,17 @@ Set `http://localhost:8092` as the app's **Calling backend URL** at
 | `PORT` | `8092` | Listen port |
 | `HOST` | `127.0.0.1` | Listen address |
 | `MOCK_CALL_MS` | `20000` | How long a mock call stays active |
-| `VOBIZ_SIP_USER` | — | Real SIP user, to test actual registration |
-| `VOBIZ_SIP_PASSWORD` | — | Real SIP password |
 
-By default the SIP credentials (served after sign-in) are placeholders, so
-registration fails and the Call button stays disabled. **That is the panel behaving correctly** — it
-deliberately refuses to dial without a registered endpoint, because otherwise
-the customer answers and hears silence.
+After a **Vobiz account** sign-in the SIP credentials it serves are
+placeholders, so registration fails and the Call button stays disabled. **That
+is the panel behaving correctly** — it deliberately refuses to dial without a
+registered endpoint, because otherwise the customer answers and hears silence.
 
-To test SIP registration against a real endpoint, export its credentials. Calls
-will still not connect — nothing here answers Vobiz's webhooks; that is
-`npm run backend`.
-
-```bash
-export VOBIZ_SIP_USER='myendpoint@registrar.vobiz.ai'
-export VOBIZ_SIP_PASSWORD='...'
-npm run mock-backend
-```
+To test SIP registration against a real endpoint, use the panel's **SIP direct**
+tab and type that endpoint's username, password and a caller ID: the mock hands
+them back to the panel exactly as the real backend does. Nothing is read from
+the environment. Calls will still not connect — nothing here answers Vobiz's
+webhooks; that is `npm run backend`.
 
 ## Do not deploy this
 

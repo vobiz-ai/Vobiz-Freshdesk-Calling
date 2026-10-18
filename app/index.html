@@ -46,13 +46,18 @@
             <span class="step-num">1</span>
             <h2 class="step-title">Sign in to Vobiz</h2>
           </div>
-          <p class="step-help">
-            Your Auth ID and Auth Token are on the
-            <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
-            under <strong>API credentials</strong>. The Auth Token is not your login password.
-          </p>
+          <div class="tabs" role="tablist" aria-label="How to sign in">
+            <button id="signin-tab-account" class="tab is-active" role="tab" aria-selected="true" aria-controls="vobiz-login-form">Vobiz account</button>
+            <button id="signin-tab-sip" class="tab" role="tab" aria-selected="false" aria-controls="sip-login-form">SIP direct</button>
+          </div>
 
-          <div id="vobiz-login-form">
+          <div id="vobiz-login-form" role="tabpanel">
+            <p class="step-help">
+              Your Auth ID and Auth Token are on the
+              <a href="https://console.vobiz.ai" target="_blank" rel="noopener">Console dashboard</a>,
+              under <strong>API credentials</strong>. The Auth Token is not your login password.
+              Signing in sets up your own SIP line in that account.
+            </p>
             <div class="form-group">
               <label class="field-label" for="vobiz-auth-id">Auth ID</label>
               <input type="text" id="vobiz-auth-id" class="input input-mono" placeholder="MA_XXXXXXXX" autocomplete="off" />
@@ -70,6 +75,27 @@
               </svg>
               Log in
             </button>
+          </div>
+
+          <div id="sip-login-form" role="tabpanel" hidden>
+            <p class="step-help">
+              Use a SIP endpoint you already have. Its endpoint and number must be
+              attached to an application whose answer URL is this app's calling backend.
+              Recordings and inbound setup need a Vobiz account sign-in.
+            </p>
+            <div class="form-group">
+              <label class="field-label" for="sip-user">SIP username</label>
+              <input type="text" id="sip-user" class="input input-mono" placeholder="username shown in the console" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label class="field-label" for="sip-password">SIP password</label>
+              <input type="password" id="sip-password" class="input" placeholder="The endpoint's password" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label class="field-label" for="sip-caller-id">Caller ID (E.164)</label>
+              <input type="tel" id="sip-caller-id" class="input input-mono" placeholder="+91XXXXXXXXXX" autocomplete="off" />
+            </div>
+            <button id="sip-login-btn" class="btn btn-primary">Connect</button>
           </div>
 
           <p id="vobiz-login-status" class="hint">Not signed in.</p>
@@ -105,7 +131,7 @@
           <div id="dialbox">
             <div class="form-group">
               <label class="field-label" for="dialnumber">Number to call</label>
-              <input type="tel" id="dialnumber" class="input input-mono input-dial" placeholder="+91 98765 43210" />
+              <input type="tel" id="dialnumber" class="input input-mono input-dial" placeholder="+91XXXXXXXXXX" />
             </div>
             <div class="actions">
               <button id="dialbtn" class="btn btn-primary" disabled>
@@ -130,7 +156,7 @@
         <audio id="vobiz-remote-audio" autoplay></audio>
 
         <!-- Optional — inbound -->
-        <section class="step step-optional">
+        <section id="inbound-step" class="step step-optional">
           <div class="step-head">
             <span class="step-num step-num-optional">+</span>
             <h2 class="step-title">Receive calls here</h2>
@@ -140,6 +166,7 @@
             inbound calls ring in the browser.
           </p>
           <button id="setup-inbound-btn" class="btn btn-secondary">Enable inbound calls</button>
+          <p id="inbound-current-app" class="hint" hidden></p>
           <p id="inbound-setup-status" class="hint"></p>
         </section>
       </div>
@@ -155,6 +182,7 @@
             </svg>
           </button>
         </div>
+        <p id="account-only-note" class="hint" hidden>Sign in with your Vobiz account to use recordings and inbound setup.</p>
         <ul id="call-history-list"></ul>
         <audio id="vobiz-playback-audio" controls hidden></audio>
       </div>
