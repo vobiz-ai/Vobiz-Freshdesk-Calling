@@ -10,22 +10,27 @@ it. We will acknowledge your report and keep you updated on the fix.
 
 ## Scope
 
-This repository contains the Freshdesk client app only. It holds no credentials
-and stores nothing in the browser.
+This repository contains the Freshdesk panel (`app/`) and the calling backend
+(`backend/`) that holds your Vobiz Auth Token. Both are in scope.
+`mock-backend/` is a local development tool and must never be deployed.
 
-**Most of the attack surface of this integration lives in the calling backend**,
-which is a separate service that you run and that holds your Vobiz Auth Token.
-Its security requirements are documented in
-[docs/backend-contract.md](docs/backend-contract.md#security-requirements).
+## What the design relies on
 
-If you are implementing that backend, note in particular:
+- **The panel stores nothing.** No credentials in `localStorage`,
+  `sessionStorage` or cookies. The session token from sign-in lives in memory.
+- **`agentId` is not identity.** It is a guessable string. Every browser route
+  on the backend needs the bearer token issued at sign-in, and the SIP password
+  is served only to the agent it belongs to.
+- **Recordings are reached only through signed, expiring links**, and the
+  backend fetches the audio itself from Vobiz media hosts. It has no route that
+  fetches a URL a caller names.
+- **CORS is an allowlist** of Freshdesk and localhost origins, extended only by
+  `ALLOWED_ORIGINS`. Never `*`, never reflected.
+- **Webhook signatures** (`X-Vobiz-Signature-V3`) are checked; set
+  `VOBIZ_WEBHOOK_SIGNATURE=require` in production once they verify.
+- **Secrets stay in `backend/.env`** (and `backend/agents.json` if used), both
+  gitignored and excluded from the packed app.
 
-- `agentId` arrives from the browser as an unauthenticated, guessable string.
-  Do not treat it as proof of identity.
-- Do not serve long-lived SIP passwords from an open endpoint.
-- Do not build an unauthenticated recording proxy. Sign recording URLs with a
-  short expiry instead.
-- Do not set `Access-Control-Allow-Origin: *`.
-
-A backend that skips these exposes call recordings, allows calls to be billed to
-your account, and allows your inbound number routing to be rewritten.
+If you run the backend, serve it over HTTPS on a stable hostname, set
+`SIGNING_SECRET`, and rotate the Vobiz Auth Token and SIP passwords if the host
+is ever exposed.

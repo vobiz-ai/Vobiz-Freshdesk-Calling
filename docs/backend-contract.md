@@ -1,58 +1,36 @@
 # Calling backend contract
 
-This app is a client. It holds no Vobiz credentials and cannot place a call on
-its own — it talks to a **calling backend** that you run, which holds the Vobiz
-account credentials and drives the [Vobiz REST API](https://www.vobiz.ai/docs).
+The panel is a client. It holds no Vobiz credentials and cannot place a call on
+its own — it talks to a **calling backend**, which holds the account credentials,
+answers Vobiz's webhooks, and signs recording links.
 
-This document is the complete contract. Implement these endpoints and the app
-works; nothing else is required of you.
-
-> **The backend is not included in this repository.** It is a separate service.
-> If you are building one, read the [security requirements](#security-requirements)
-> first — the obvious implementation is unsafe.
+**`backend/` in this repository implements this contract.** This document is for
+anyone running it, changing it, or writing their own.
 
 ## Why a backend exists at all
 
-Two reasons, both non-negotiable:
+1. **Vobiz Auth Tokens are account-level API credentials.** They must never
+   reach client-side code. The backend holds the token; the browser never sees
+   it after sign-in.
+2. **Vobiz needs an answer URL.** When the panel dials, Vobiz asks a URL what to
+   do with the call. That URL has to be a public HTTPS service.
+3. **An `<audio>` element cannot send authentication headers**, and recordings
+   are protected. Playback needs a server-side step.
 
-1. **Vobiz Auth Tokens are account-level API credentials.** Vobiz's own
-   documentation says never to expose `X-Auth-Token` in client-side code. The
-   backend holds the token and the browser never sees it.
-2. **A `<audio>` element cannot send authentication headers.** Call recordings
-   are protected, so playback needs a server-side step. See
-   [recordings](#get-recording-audioagentidrecordingid) for the right way to do
-   this — a plain proxy is the wrong answer.
+## Authentication
 
-## Base URL
+`POST /login` returns a **bearer token**. Every other browser route requires
+`Authorization: Bearer <token>`, and routes that name an agent only answer for
+the agent the token was issued to. Without the token the backend answers `401`
+— including `/agent/{agentId}`, which is what holds the SIP password.
 
-Everything below is relative to the `backend_url` installation parameter. The
-app requires HTTPS and strips trailing slashes.
+The panel keeps the token in memory only. Reloading the tab means signing in
+again.
 
-## Endpoints the browser calls
+## Routes the browser calls
 
-### `GET /agent/{agentId}`
-
-Returns the SIP identity this panel registers as.
-
-```json
-{ "displayName": "Priya S", "sipUser": "priya@registrar.vobiz.ai", "sipPassword": "..." }
-```
-
-`sipUser` must be a full `user@domain` — the app builds `sip:${sipUser}`.
-
-> **Do not serve a long-lived SIP password from an unauthenticated endpoint.**
-> See [security requirements](#security-requirements).
-
-### `GET /session/{agentId}`
-
-Session restore, called when the panel loads.
-
-```json
-{ "loggedIn": true, "numbers": ["+919876543210"], "from": "+919876543210", "authId": "MA_XXXXXXXX" }
-```
-
-Return `{ "loggedIn": false }` when there is no session. Errors are swallowed by
-the app.
+All relative to the `backend_url` installation parameter. The panel requires
+HTTPS (or `http://localhost` for development) and strips trailing slashes.
 
 ### `POST /login`
 
@@ -60,148 +38,222 @@ the app.
 { "agentId": "priya", "authId": "MA_XXXXXXXX", "authToken": "..." }
 ```
 
-Validate against Vobiz, store the credentials server-side keyed by `agentId`,
-and return the account's numbers:
+The backend compares both values, in constant time, with the account it is
+configured for, and refuses anything else with `401`. It refuses an agent
+identity it does not know with `403`.
 
 ```json
-{ "numbers": ["+919876543210", "+919876543211"], "selected": "+919876543210" }
+{ "token": "64 hex chars", "numbers": ["+919876543210"], "selected": "+919876543210" }
 ```
 
-On failure return a non-2xx status with `{ "error": "..." }`.
+### `GET /agent/{agentId}` — *token required*
 
-### `POST /select-number`
+The SIP identity the panel registers as.
+
+```json
+{ "displayName": "Priya S", "sipUser": "priya@registrar.vobiz.ai", "sipPassword": "..." }
+```
+
+`sipUser` is a full `user@domain`; the panel builds `sip:${sipUser}`. Before
+sign-in this returns `401`, and the panel shows *Signed out* until it has a
+token.
+
+### `GET /session/{agentId}`
+
+```json
+{ "loggedIn": true, "numbers": ["+919876543210"], "from": "+919876543210", "authId": "MA_XXXXXXXX" }
+```
+
+`{ "loggedIn": false }` without a valid token for that agent.
+
+### `POST /select-number` — *token required*
 
 ```json
 { "agentId": "priya", "number": "+919876543211" }
 ```
 
-→ `{ "selected": "+919876543211" }`
+→ `{ "selected": "+919876543211" }`. A number the account does not own is
+refused with `400` — accepting one would be caller-ID spoofing.
 
-### `POST /start-call` — *no longer used for outbound*
+### `POST /setup-inbound` — *token required*
 
-The panel does **not** ask the backend to originate outbound calls any more. It
-sends the SIP INVITE itself, so the browser is the **A leg**, and your `/answer`
-handler bridges outward with `<Dial><Number>`.
+→ `{ "number": "+919876543210", "appId": "...", "endpointBound": true }`
 
-The previous design — backend originates to the customer over the REST API, then
-bridges the browser in with `<Dial><User>` — is dead. Routing *into* a registered
-WebRTC endpoint is broken platform-side: Vobiz builds an unparseable gateway URI
-and drops its own INVITE. Verified across other accounts and Vobiz's own SDK; see
-[ISSUES.md](../ISSUES.md).
+Creates (or reuses) a Vobiz application whose answer URL is `PUBLIC_BASE/answer`,
+attaches the agent's selected number to it, and binds the agent's SIP endpoint
+to it. The endpoint binding is what makes **outbound** work as well: the panel's
+own INVITE is answered by the endpoint's application.
 
-Keep the route if you want a server-originated fallback (for ringing an agent's
-mobile, say). Its shape is unchanged:
+### `GET /recordings/{agentId}?limit=15` — *token required*
 
 ```json
-{ "to": "+919876543210", "agentId": "priya", "platform": "freshdesk" }
+{ "objects": [ {
+  "recording_id": "...", "add_time": "2026-09-14 10:30:00", "rounded_recording_duration": 42,
+  "playUrl": "/recording-audio/priya/<id>?exp=1760000000&sig=<hmac>"
+} ] }
 ```
 
-→ `{ "request_uuid": "..." }`
+### `GET /recording-audio/{agentId}/{recordingId}?exp=…&sig=…`
 
-### `GET /call-status/{callUuid}?agentId={agentId}`
+The audio. The panel assigns `playUrl` directly to an `<audio>` element, which
+cannot send the bearer token, so this route is authorised by the signature
+instead: HMAC-SHA256 over `agentId|recordingId|exp` with `SIGNING_SECRET`,
+valid for `RECORDING_URL_TTL_SECONDS` (default 300).
+
+The backend looks the recording up by ID and fetches the audio itself. It only
+fetches from Vobiz media hosts (and object storage they redirect to), and only
+sends the account credentials to `*.vobiz.ai`. **There is no route that fetches
+a URL the caller names** — that would be an open proxy carrying your Auth Token.
+
+### `GET /call-status/{callUuid}` — *token required*
 
 → `{ "active": true }`
 
-Polled every 3 seconds while a call is up.
+### `POST /start-call` — *retired*
 
-### `POST /setup-inbound`
+Returns `410`. The panel places outbound calls itself over SIP.
 
-```json
-{ "agentId": "priya" }
-```
+## Webhooks Vobiz calls
 
-→ `{ "number": "+919876543210" }`
+These must be reachable at `PUBLIC_BASE` over public HTTPS. Vobiz sends them
+**form-encoded** (`application/x-www-form-urlencoded`).
 
-Creates (or reuses) a Vobiz application pointing at your `/inbound-answer`, and
-attaches the agent's selected number to it.
+### `POST /answer`
 
-### `GET /recordings/{agentId}?limit=15`
+The answer URL of the application your endpoint and number are attached to. One
+handler serves both directions, told apart by `From`:
 
-```json
-{ "objects": [ { "recording_id": "...", "add_time": "2026-09-14 10:30:00", "rounded_recording_duration": 42 } ] }
-```
+- `From` starts with `sip:` → **the browser dialled out.**
+- `From` is a plain number → **a PSTN caller reached your number.**
 
-### `GET /recording-audio/{agentId}/{recordingId}`
+An `Event=Hangup` request is a notification, not a request for instructions. It
+gets an empty `<Response></Response>` — returning call control would start a
+new leg after the call has ended.
 
-Returns playable audio. The app assigns this URL directly to an `<audio>`
-element, so **it cannot carry an `Authorization` header.**
+#### Outbound (default: `OUTBOUND_MODE=conference`)
 
-**Do not solve this with an open proxy.** An endpoint that streams any
-recording to anyone who knows the URL is a data breach waiting to happen, and
-the listing endpoint above hands out the IDs. Instead:
-
-- have `/recordings` return **signed, short-lived URLs** (a few minutes) that
-  encode the recording ID and an expiry, and
-- verify that signature on every request here.
-
-## Endpoints Vobiz calls
-
-These are webhooks. Vobiz must reach them over public HTTPS.
-
-### `GET|POST /answer`
-
-One handler serves both directions. Pick by looking at who the call is *from*:
-
-- `From` starts with `sip:` (or `RouteType=sip`) → the **browser dialled out**.
-  Bridge to the PSTN with `<Dial><Number>`.
-- `From` is a plain number → a **PSTN caller** reached your DID. Bridge to the
-  browser with `<Dial><User>`.
+The agent's leg waits in a room of its own, and the customer is dialled into it
+over the REST API:
 
 ```xml
-<!-- browser is the A leg, dialling out -->
+<Response>
+  <Conference stayAlone="true" startConferenceOnEnter="false" endConferenceOnExit="true"
+              waitSound="https://calling.example.com/outbound-wait" timeLimit="14400"
+              callbackUrl="https://calling.example.com/conf-event" callbackMethod="POST">fd<call-uuid></Conference>
+  <Hangup/>
+</Response>
+```
+
+```
+POST /api/v1/Account/{auth_id}/Call/
+  from=<agent's caller ID>  to=<customer>
+  answer_url=https://calling.example.com/outbound-join?room=fd<call-uuid>
+  hangup_url=https://calling.example.com/outbound-hangup?room=fd<call-uuid>
+```
+
+Why not `<Dial><Number>`? It is simpler, and it is available as
+`OUTBOUND_MODE=dial`. But a `<Dial><Number>` bridged from a WebRTC leg was
+measured losing the phone side's audio on three of five calls, while a
+REST-placed leg joined to a conference measured clean. A failed call still
+rings, answers and bills, with nobody able to hear anything.
+
+`OUTBOUND_MODE=dial` answers:
+
+```xml
 <Response>
   <Dial callerId="+919876543210" timeout="30" timeLimit="14400"
-        action="https://you.example.com/dial-status" method="POST" redirect="false">
+        action="https://calling.example.com/dial-status" method="POST" redirect="false">
     <Number>919876543211</Number>
   </Dial>
 </Response>
+```
 
-<!-- PSTN inbound, bridging into the browser (currently blocked platform-side) -->
+**Caller ID** is the number the agent picked in the panel, falling back to
+`VOBIZ_FROM_NUMBER`. The A leg's own identity is a SIP username, which is not a
+dialable CLI.
+
+#### Inbound
+
+```xml
 <Response>
   <Dial callerId="+919876543210" timeout="30" timeLimit="14400"
-        action="https://you.example.com/dial-status" method="POST" redirect="false">
+        action="https://calling.example.com/dial-status" method="POST" redirect="false">
     <User>sip:priya@registrar.vobiz.ai</User>
   </Dial>
 </Response>
 ```
 
-**`action` and `redirect="false"` are required.** Without them Vobiz re-fetches
-the answer URL when `<Dial>` ends and re-executes the document, so one call hits
-this webhook repeatedly and dials again each time.
+**`callerId` must be the number that was dialled.** Left unset, Vobiz derives it
+from the A leg — the caller's own number, which your account does not own — and
+refuses to create the leg to the browser.
 
-**An `Event=Hangup` request is not a request for instructions.** Answer it with
-an empty `<Response></Response>`; returning `<Dial>` originates a fresh leg after
-the call has already ended.
+**`action` and `redirect="false"` are required** on every `<Dial>`. Without
+them Vobiz re-fetches the answer URL when `<Dial>` ends and runs the document
+again, dialling a second time.
 
-### `GET|POST /dial-status`
+With `RECORD_CALLS=1`, a `<Record recordSession="true" redirect="false"/>` is
+placed as a sibling **before** `<Dial>` or `<Conference>` — never inside it.
 
-The `action` target above. Return `200` with an empty body. Log `DialStatus`,
-`DialHangupCause` and especially `DialBLegUUID` — an empty `DialBLegUUID` means
-no B leg was ever created, which is the signature of an unreachable destination
-or a caller ID the account does not own.
+### `POST /outbound-join?room=…`
 
-### `GET|POST /inbound-answer`
+The customer answered. They join the agent's room, and their arrival starts it:
 
-Returns the XML for an inbound call. A 20-second no-answer timeout falling
-through to voicemail is a sensible default.
+```xml
+<Response>
+  <Conference startConferenceOnEnter="true" stayAlone="false" endConferenceOnExit="true"
+              timeLimit="14400">fd<call-uuid></Conference>
+  <Hangup/>
+</Response>
+```
 
-## Security requirements
+With `endConferenceOnExit` on both legs, either side hanging up ends the call
+for the other.
 
-The app sends `agentId` as a plain string in the path, body, or query. **If your
-backend trusts that string, every endpoint above is unauthenticated and the
-`agentId` is guessable.** An attacker who learns your backend URL could then
-read SIP passwords, place calls billed to your account, rewrite your inbound
-number routing, and download every call recording.
+### `POST /outbound-hangup?room=…`
 
-A backend implementing this contract must therefore:
+The customer's leg ended. If they never answered, the backend hangs up the
+agent's leg (`DELETE /Call/{uuid}/`); otherwise nothing would release the agent
+from a room set to stay open.
 
-- [ ] **Authenticate every request.** Do not treat `agentId` as proof of
-      identity. Issue a per-agent token at login and require it.
-- [ ] **Not serve long-lived SIP passwords.** Mint short-lived credentials, or
-      gate `/agent/{agentId}` behind the same authentication.
-- [ ] **Sign recording URLs** with a short expiry, as described above.
-- [ ] **Scope CORS to the Freshdesk origin.** Never `Access-Control-Allow-Origin: *`.
-- [ ] **Store Auth Tokens encrypted at rest**, and never log them.
-- [ ] **Serve over HTTPS** with a stable hostname.
+### `POST /outbound-wait`
 
-If you are adapting an internal prototype, assume it does none of these.
+What the agent hears while the customer's phone rings: `<Wait length="10"/>`.
+
+### `POST /conf-event`, `POST /dial-status`
+
+Logged, answered with an empty `<Response></Response>`. On `/dial-status`, an
+empty `DialBLegUUID` means no B leg was created — an unreachable destination, or
+a caller ID the account does not own.
+
+### Webhook signatures
+
+Vobiz signs callbacks with `X-Vobiz-Signature-V3` and
+`X-Vobiz-Signature-V3-Nonce`:
+
+```
+base64( HMAC-SHA256( key = Auth Token, msg = <callback URL without query> + "." + nonce ) )
+```
+
+The signature covers the URL and nonce, never the form body. The backend rebuilds
+the URL from `PUBLIC_BASE`, since behind a tunnel the `Host` header is not the
+public one. `VOBIZ_WEBHOOK_SIGNATURE=log` (default) logs mismatches;
+`require` rejects them with `403`.
+
+## Security
+
+What `backend/` does, and what any replacement must also do:
+
+- **Authenticate every browser request** with a token issued at sign-in. An
+  `agentId` is a guessable string and proves nothing.
+- **Serve the SIP password only to the signed-in agent it belongs to.**
+- **Sign recording links** with a short expiry, and fetch the audio server-side
+  from an allowlist of hosts. Never proxy a URL a caller supplies.
+- **Scope CORS** to the Freshdesk and localhost origins. Never
+  `Access-Control-Allow-Origin: *`, never a reflected origin. Add others with
+  `ALLOWED_ORIGINS`; the backend logs each origin it refuses.
+- **Never log the Auth Token**, and keep it out of URLs.
+- **Serve over HTTPS** with a stable hostname.
+- **Serve no files from disk.** There is no static route to traverse.
+
+Sessions are in memory. That keeps credentials off disk, and means the backend
+runs as a single instance and signs everyone out when it restarts.

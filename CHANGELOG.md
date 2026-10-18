@@ -3,6 +3,40 @@
 All notable changes to this app are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — Unreleased
+
+### Added
+- **The calling backend** (`backend/`). The repository previously described a
+  backend it did not contain. It runs with `npm run backend`, configured from
+  `backend/.env.example`.
+- Outbound calls are bridged through a conference by default, with plain
+  `<Dial><Number>` available as `OUTBOUND_MODE=dial`.
+- **Enable inbound calls** now creates or reuses the Vobiz application, attaches
+  the number, and binds the agent's SIP endpoint.
+- Optional call recording (`RECORD_CALLS=1`) and webhook signature checking
+  (`VOBIZ_WEBHOOK_SIGNATURE`).
+
+### Changed
+- **The panel signs in before it registers.** `/login` returns a session token,
+  held in memory and sent as a bearer header; the backend serves the SIP
+  identity only with it. A fresh open shows *Signed out* until sign-in.
+- Recordings play from signed, expiring links returned by `/recordings`.
+- `/start-call` is retired; the panel places outbound calls over SIP.
+- The mock backend follows the same token flow, answers CORS only for loopback,
+  and shows the browser-as-A-leg XML.
+
+### Fixed
+- `npm run pack` failed on lint errors in `app/scripts/app.js`, while CI stayed
+  green because `fdk validate` exits 0 on lint errors. CI now packs.
+- `npm run dev` lacked the `--skip-coverage` flag the README described.
+- Tests now pin the three SIP settings every call depends on: a space-free
+  User-Agent, session timers off, and STUN on calls and answers.
+
+### Security
+- The SIP password is no longer served to any caller who names an agent id.
+- CORS no longer reflects arbitrary origins.
+- Recording playback no longer relies on an unauthenticated route.
+
 ## [1.0.0] — 2026-09-14
 
 First public release.
