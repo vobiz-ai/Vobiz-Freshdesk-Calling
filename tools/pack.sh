@@ -3,7 +3,7 @@
 # Pack the app into an installable zip.
 #
 # Use this instead of a bare `fdk pack`, which fails on the vendored JsSIP
-# bundle (ISSUES.md #2). This builds a copy of the app with JsSIP inlined into
+# bundle. This builds a copy of the app with JsSIP inlined into
 # index.html — which FDK does not lint — and packs that. The source tree is
 # never modified.
 #

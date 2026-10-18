@@ -42,6 +42,11 @@ All notable changes to this app are documented here. This project follows
 - Tests now pin the three SIP settings every call depends on: a space-free
   User-Agent, session timers off, and STUN on calls and answers.
 
+### Documentation
+- The README is rewritten for the people setting the app up: requirements,
+  quick start, both sign-in modes, a configuration reference, production,
+  security, troubleshooting and limitations. `ISSUES.md` is folded into it.
+
 ### Security
 - The SIP password is no longer served to any caller who names an agent id.
 - CORS no longer reflects arbitrary origins.
