@@ -7,6 +7,7 @@
   "scripts": {
     "test": "vitest run --coverage",
     "test:watch": "vitest",
+    "backend": "node backend/server.js",
     "mock-backend": "node mock-backend/server.js",
     "fdk-unit-test": "vitest run --coverage",
     "pack": "./tools/pack.sh",

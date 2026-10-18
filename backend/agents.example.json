@@ -1,0 +1,12 @@
+{
+  "priya": {
+    "displayName": "Priya S",
+    "sipUser": "priya-endpoint-username",
+    "sipPassword": "replace-with-the-endpoint-password"
+  },
+  "arjun": {
+    "displayName": "Arjun K",
+    "sipUser": "arjun-endpoint-username",
+    "sipPassword": "replace-with-the-endpoint-password"
+  }
+}

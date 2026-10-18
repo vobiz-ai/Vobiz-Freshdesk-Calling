@@ -24,3 +24,7 @@ node_modules/
 
 # Build copy made by tools/pack.sh
 build/
+
+# Calling backend secrets
+backend/.env
+backend/agents.json
