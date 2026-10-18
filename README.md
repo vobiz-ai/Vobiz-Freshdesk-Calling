@@ -13,7 +13,7 @@ The repository has two parts, and you run both:
 | Part | Where | What it does |
 | --- | --- | --- |
 | **The panel** | `app/`, `config/`, `manifest.json` | The Freshdesk app. A SIP softphone in the CTI sidebar |
-| **The calling backend** | `backend/` | A small Node service you host. Holds your Vobiz Auth Token, answers Vobiz's webhooks, signs recording links |
+| **The calling backend** | `backend/` | A small Node service you host. Serves any Vobiz account: checks an agent's credentials at sign-in, sets up their SIP line, answers Vobiz's webhooks, signs recording links |
 
 ```
   agent clicks a number
@@ -37,8 +37,10 @@ customer. [docs/architecture.md](docs/architecture.md) explains both directions.
 ## What you need first
 
 - A Freshdesk account on **Growth, Pro, or Enterprise** with admin access.
-- A [Vobiz account](https://console.vobiz.ai) with an Auth ID, Auth Token, at
-  least one phone number, and a **SIP endpoint** for each agent.
+- A [Vobiz account](https://console.vobiz.ai) with at least one phone number.
+  Agents sign in with its Auth ID and Auth Token; the backend creates each
+  agent's SIP endpoint for them. Nothing about the account goes in the
+  backend's configuration.
 - Somewhere to run the backend on **public HTTPS** — a server, or a tunnel for
   testing. Vobiz must be able to reach it.
 - Node **20+** for the backend, and Node **24.11.1** with FDK 10.1.9 to pack the
@@ -57,30 +59,59 @@ cp backend/.env.example backend/.env     # then fill it in
 npm run backend                          # http://127.0.0.1:8093
 ```
 
-`backend/.env.example` documents every variable. The required ones:
+`backend/.env.example` documents every variable. None of them is a Vobiz
+credential, number or endpoint — the backend serves whichever account an agent
+signs in with. The ones to set:
 
 | Variable | Value |
 | --- | --- |
-| `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN` | Your account's API credentials |
-| `VOBIZ_FROM_NUMBER` | A number the account owns, in E.164 — the default caller ID |
-| `VOBIZ_SIP_USER`, `VOBIZ_SIP_PASSWORD` | The agent's SIP endpoint. Use the username shown in the console after creation |
 | `PUBLIC_BASE` | The public `https://` URL Vobiz reaches the backend on, no trailing slash |
 | `SIGNING_SECRET` | A long random value (`openssl rand -hex 32`) that signs recording links |
+| `DATA_DIR` (optional) | Where the endpoint map is kept. Default `backend/data` |
 
-For more than one agent, give each their own endpoint in a JSON file — see
-`backend/agents.example.json` and `AGENTS_FILE`.
+Put the backend behind HTTPS (a reverse proxy, or a tunnel for testing). There
+is nothing to configure in the Vobiz console for **Vobiz account** sign-in:
 
-Put the backend behind HTTPS (a reverse proxy, or a tunnel for testing), then
-point Vobiz at it:
+1. **At sign-in**, the backend checks the Auth ID and Auth Token with Vobiz
+   (`GET /numbers`), and refuses the pair if Vobiz does.
+2. In that account it finds this integration's **Application** — the one whose
+   answer URL is `PUBLIC_BASE/answer` — or creates it. An application anyone
+   else made is never changed.
+3. It finds the agent's own **SIP endpoint** (one per account and agent
+   identity), or creates it, sets a fresh random SIP password that only that
+   browser session receives, and binds the endpoint to the application.
+   `backend/data/endpoints.json` remembers `{authId:agentId → endpointId,
+   username}` — ids only, mode 0600, gitignored.
+4. **Enable inbound calls** in the panel attaches the agent's selected number to
+   the application. It is a separate, explicit step because it moves the number
+   off whatever application it was on; the panel says which one.
 
-1. In the Vobiz console, create an **Application** whose answer URL is
-   `PUBLIC_BASE/answer` (method `POST`).
-2. Attach the agent's **SIP endpoint** to that application. This is what makes
-   outbound work — the panel's INVITE is answered by the endpoint's application.
-3. Attach the **phone number** to the same application for inbound.
+The Auth Token stays in the backend's memory, keyed by Auth ID. It is never
+logged, written to disk, or sent back to the browser. After a restart, agents
+sign in again; a recording link for an account nobody has signed in to since
+then answers "sign in again".
 
-The panel's **Enable inbound calls** button does steps 1–3 for you once the
-agent is signed in.
+### SIP direct
+
+The panel's **SIP direct** tab signs in with an existing endpoint instead: its
+SIP username and password, and the caller ID to use. No account credentials are
+involved, so the backend cannot set anything up — you bind things yourself,
+once, so that Vobiz sends the calls to this backend:
+
+1. In the Vobiz console, create an **Application** with answer URL
+   `PUBLIC_BASE/answer`, method `POST` (API: `POST /Account/{auth_id}/Application/`
+   with `answer_url`, `answer_method`).
+2. Open the **Endpoint** and set its application to that one (API:
+   `POST /Account/{auth_id}/Endpoint/{endpoint_id}/` with `{"app_id": "<app_id>"}`).
+3. To receive calls, attach the **number** you use as caller ID to the same
+   application (API: `POST /Account/{auth_id}/numbers/%2B<digits>/application`
+   with `{"application_id": "<app_id>"}`).
+
+In SIP direct, outbound calls use `<Dial><Number>` with the typed caller ID
+(Vobiz refuses a number the account does not own), inbound calls to that number
+ring the agent, and recordings, the number list and **Enable inbound calls** are
+hidden — they need a Vobiz account sign-in. The backend cannot verify a SIP-direct
+claim, so prefer account sign-in on a backend shared by several companies.
 
 ## 2. Pack and install the app
 
@@ -106,11 +137,13 @@ Freshdesk Developer Portal, upload the zip, install it, and set:
 ## Using it
 
 1. Open any agent page and click the Vobiz icon at the bottom left.
-2. **Sign in** with the Vobiz Auth ID and Auth Token. The backend checks them
-   against the account it serves and returns a session; the token is not stored
-   by the panel. The badge goes from *Signed out* to *Ready* once the panel has
-   registered.
-3. **Pick the number** to call from.
+2. **Sign in** on the **Vobiz account** tab with your Auth ID and Auth Token —
+   any Vobiz account works. The backend checks them with Vobiz, sets up your SIP
+   line and returns a session; the token is not stored by the panel. Or use the
+   **SIP direct** tab with an endpoint you already have (see above). The badge
+   goes from *Signed out* to *Ready* once the panel has registered.
+3. **Pick the number** to call from. The list is the account's active,
+   voice-enabled numbers; the backend refuses anything else.
 4. **Call** by typing a number, or click any phone number in Freshdesk. The
    first call asks for microphone permission.
 5. **Receive calls** by clicking **Enable inbound calls** once. Keep the
@@ -147,7 +180,8 @@ Open a Freshdesk page with `?dev=true` appended to load the panel from your
 machine.
 
 With the mock, any Auth ID and Auth Token are accepted (`fail` as the Auth ID
-shows the error path) and no call is placed. To place real calls, run the real
+shows the error path) and no call is placed. Its **SIP direct** tab hands back
+whatever endpoint you type, so you can test real registration. To place real calls, run the real
 backend instead with `PUBLIC_BASE` set to a public HTTPS tunnel to port 8093.
 
 > **On ngrok's free tier**, the browser interstitial breaks requests unless they
@@ -165,8 +199,12 @@ npm run pack    # build dist/vobiz-freshdesk-calling.zip
 The panel tests load the real `app/scripts/app.js` and the real markup from
 `app/index.html` into jsdom with the Freshworks SDK, JsSIP and `fetch` faked. The
 backend tests start the real `backend/server.js` and drive it over HTTP, with
-only the Vobiz API faked — including the security checks (SIP password, CORS,
-recording links, path traversal, webhook signatures).
+only the Vobiz API faked — a stateful fake with two accounts. They cover two
+accounts signing in to distinct endpoints, wrong tokens, webhook routing by SIP
+user, `ParentAuthID` and dialled number, the 17-digit application id surviving
+intact, account-scoped recording links, SIP direct, and the security checks
+(SIP password, Auth Token never in a response, CORS, path traversal, webhook
+signatures).
 
 `fdk validate` reports 0 platform errors. Its lint count is JsSIP's, from the
 vendored bundle, and does not reach the packed app.
@@ -203,7 +241,8 @@ npx esbuild entry.js --bundle --minify --format=iife \
   tickets, log calls, pop the contact on an inbound call, or attach recordings.
   Click-to-call works.
 - **No hold, mute, transfer, or conference controls.**
-- **Sessions live in the backend's memory.** Restarting it signs everyone out,
+- **Sessions and Auth Tokens live in the backend's memory.** Restarting it signs
+  everyone out (the endpoint map survives, so they get the same endpoint back),
   and it runs as a single instance.
 
 Detail in [ISSUES.md](ISSUES.md).
@@ -211,12 +250,14 @@ Detail in [ISSUES.md](ISSUES.md).
 ## Security
 
 The panel stores nothing — no credentials in `localStorage`, no cookies. The
-Auth Token is sent once, to your backend, at sign-in.
+Auth Token is sent once, to your backend, at sign-in, and held there in memory
+only.
 
 The backend issues a session token at sign-in and requires it for the SIP
 identity, caller-ID changes, inbound setup and recordings; it answers CORS only
 for Freshdesk and localhost origins; it serves recordings only through signed,
-expiring links; and it checks Vobiz's webhook signatures. See
+expiring links scoped to one account; and it checks Vobiz's webhook signatures
+with the Auth Token of the account each call belongs to. See
 [docs/backend-contract.md](docs/backend-contract.md#security) and
 [SECURITY.md](SECURITY.md).
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { boot, flush, routes, FakeSession, AGENT_OK, SETTINGS } from "./harness.js";
 
 const LOGGED_IN = {
-  body: { loggedIn: true, numbers: ["+911140848108", "+911140848109"], from: "+911140848108", authId: "MA_TEST" },
+  body: { loggedIn: true, numbers: ["+910000000001", "+910000000002"], from: "+910000000001", authId: "MA_TEST0001" },
 };
 
 const RECORDINGS = {
@@ -25,18 +25,18 @@ beforeEach(() => {
 
 describe("caller-ID selection", () => {
   it("tells the backend which number to call from", async () => {
-    const fetch = base({ "/select-number": { body: { selected: "+911140848109" } } });
+    const fetch = base({ "/select-number": { body: { selected: "+910000000002" } } });
     const t = await boot({ iparams: SETTINGS, fetch });
     await flush();
 
     const select = t.el("vobiz-number-select");
-    select.value = "+911140848109";
+    select.value = "+910000000002";
     select.dispatchEvent(new window.Event("change"));
     await flush();
 
     const call = fetch.mock.calls.find(c => String(c[0]).includes("/select-number"));
     expect(call).toBeTruthy();
-    expect(JSON.parse(call[1].body)).toMatchObject({ agentId: "priya", number: "+911140848109" });
+    expect(JSON.parse(call[1].body)).toMatchObject({ agentId: "priya", number: "+910000000002" });
   });
 
   it("reports a rejected selection", async () => {
@@ -56,7 +56,7 @@ describe("caller-ID selection", () => {
       iparams: SETTINGS,
       fetch: routes({
         "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: true, numbers: [], from: null, authId: "MA_TEST" } },
+        "/session/": { body: { loggedIn: true, numbers: [], from: null, authId: "MA_TEST0001" } },
         "/recordings/": RECORDINGS,
       }),
     });
@@ -75,7 +75,7 @@ describe("caller-ID selection", () => {
 
 describe("inbound setup", () => {
   it("binds the selected number to this panel", async () => {
-    const fetch = base({ "/setup-inbound": { body: { number: "+911140848108" } } });
+    const fetch = base({ "/setup-inbound": { body: { number: "+910000000001" } } });
     const t = await boot({ iparams: SETTINGS, fetch });
     await flush();
 
@@ -84,7 +84,7 @@ describe("inbound setup", () => {
 
     const call = fetch.mock.calls.find(c => String(c[0]).includes("/setup-inbound"));
     expect(JSON.parse(call[1].body)).toMatchObject({ agentId: "priya" });
-    expect(t.text("inbound-setup-status")).toMatch(/\+911140848108/);
+    expect(t.text("inbound-setup-status")).toMatch(/\+910000000001/);
   });
 
   it("reports a refusal from the backend", async () => {
@@ -167,7 +167,7 @@ describe("call progress", () => {
     await vi.advanceTimersByTimeAsync(0);
     t.ua.emit("registered");
 
-    t.el("dialnumber").value = "+911140848108";
+    t.el("dialnumber").value = "+910000000001";
     t.el("dialbtn").click();
     await vi.advanceTimersByTimeAsync(0);
     return { t, session: t.ua.calls.at(-1).session };
@@ -176,7 +176,7 @@ describe("call progress", () => {
   it("dials the registrar with the typed number", async () => {
     const { t } = await dial();
     expect(t.ua.calls).toHaveLength(1);
-    expect(t.ua.calls[0].target).toBe("sip:+911140848108@registrar.vobiz.ai");
+    expect(t.ua.calls[0].target).toBe("sip:+910000000001@registrar.vobiz.ai");
     expect(t.ua.calls[0].options.mediaConstraints).toEqual({ audio: true, video: false });
   });
 
@@ -184,10 +184,10 @@ describe("call progress", () => {
     const { t, session } = await dial();
 
     session.emit("progress");
-    expect(t.text("callnum")).toMatch(/ringing \+911140848108/i);
+    expect(t.text("callnum")).toMatch(/ringing \+910000000001/i);
 
     session.emit("confirmed");
-    expect(t.text("callnum")).toMatch(/on a call with \+911140848108/i);
+    expect(t.text("callnum")).toMatch(/on a call with \+910000000001/i);
 
     session.emit("ended");
     expect(t.text("callnum")).toMatch(/call ended/i);
@@ -229,10 +229,10 @@ describe("the dial button", () => {
     const t = await boot({ iparams: SETTINGS, fetch: base({}) });
     await flush();
     t.ua.emit("registered");
-    t.el("dialnumber").value = "  +911140848108  ";
+    t.el("dialnumber").value = "  +910000000001  ";
     t.el("dialbtn").click();
     await flush();
-    expect(t.ua.calls.at(-1).target).toBe("sip:+911140848108@registrar.vobiz.ai");
+    expect(t.ua.calls.at(-1).target).toBe("sip:+910000000001@registrar.vobiz.ai");
   });
 });
 
@@ -258,5 +258,126 @@ describe("defensive guards", () => {
 
     // The error is caught and logged rather than propagating to the click handler.
     expect(() => t.el("hangupbtn").click()).not.toThrow();
+  });
+});
+
+describe("sign-in tabs", () => {
+  const SIGNED_OUT = { ok: false, status: 401, body: { error: "Sign in first" } };
+
+  function sipFlow(extra = {}) {
+    let signedIn = false;
+    return routes({
+      "/agent/": () => (signedIn ? { body: { displayName: "ravi", sipUser: "ravidesk@registrar.vobiz.ai", sipPassword: "typed" } } : SIGNED_OUT),
+      "/session/": { body: { loggedIn: false } },
+      "/login-sip": () => { signedIn = true; return { body: { token: "tok-sip", mode: "sip", numbers: ["+910000000005"], selected: "+910000000005" } }; },
+      "/login": () => { signedIn = true; return { body: { token: "tok-acct", mode: "account", numbers: ["+910000000001"], numberDetails: [{ e164: "+910000000001", applicationId: "20000000000000001" }], selected: "+910000000001" } }; },
+      "/recordings/": RECORDINGS,
+      ...extra,
+    });
+  }
+
+  it("switches between the Vobiz account and SIP direct forms", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: sipFlow() });
+    expect(t.el("vobiz-login-form").hidden).toBe(false);
+    expect(t.el("sip-login-form").hidden).toBe(true);
+    t.el("signin-tab-sip").click();
+    expect(t.el("vobiz-login-form").hidden).toBe(true);
+    expect(t.el("sip-login-form").hidden).toBe(false);
+    expect(t.el("signin-tab-sip").getAttribute("aria-selected")).toBe("true");
+    t.el("signin-tab-account").click();
+    expect(t.el("vobiz-login-form").hidden).toBe(false);
+  });
+
+  it("asks for all three SIP-direct fields", async () => {
+    const fetch = sipFlow();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    t.el("sip-user").value = "ravidesk";
+    t.el("sip-login-btn").click();
+    await flush();
+    expect(t.text("vobiz-login-status")).toMatch(/SIP username/);
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/login-sip"))).toBe(false);
+  });
+
+  it("signs in over SIP direct, registers with the typed endpoint and hides account-only features", async () => {
+    const fetch = sipFlow();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    t.el("signin-tab-sip").click();
+    t.el("sip-user").value = "ravidesk";
+    t.el("sip-password").value = "typed";
+    t.el("sip-caller-id").value = "+910000000005";
+    t.el("sip-login-btn").click();
+    await flush(16);
+
+    const call = fetch.mock.calls.find(c => String(c[0]).includes("/login-sip"));
+    expect(JSON.parse(call[1].body)).toEqual({ agentId: "priya", sipUser: "ravidesk", sipPassword: "typed", callerId: "+910000000005" });
+    expect(t.ua.config.uri).toBe("sip:ravidesk@registrar.vobiz.ai");
+    expect(t.text("vobiz-login-status")).toMatch(/SIP direct — calling from \+910000000005/);
+    expect(t.el("inbound-step").hidden).toBe(true);
+    expect(t.el("call-history-list").hidden).toBe(true);
+    expect(t.el("account-only-note").hidden).toBe(false);
+    expect(t.el("vobiz-number-select").hidden).toBe(true);
+    expect(fetch.mock.calls.some(c => String(c[0]).includes("/recordings/"))).toBe(false);
+  });
+
+  it("reports a refused SIP-direct sign-in", async () => {
+    const fetch = sipFlow({ "/login-sip": { ok: false, status: 400, body: { error: "The caller ID must be a phone number" } } });
+    const t = await boot({ iparams: SETTINGS, fetch });
+    t.el("sip-user").value = "ravidesk";
+    t.el("sip-password").value = "typed";
+    t.el("sip-caller-id").value = "nope";
+    t.el("sip-login-btn").click();
+    await flush(16);
+    expect(t.text("vobiz-login-status")).toMatch(/caller ID must be a phone number/);
+  });
+
+  it("re-registers with the new password on every sign-in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: sipFlow() });
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
+    t.el("vobiz-auth-token").value = "token";
+    t.el("vobiz-login-btn").click();
+    await flush(16);
+    const first = t.ua;
+    t.el("vobiz-login-btn").click();
+    await flush(16);
+    expect(first.stopped).toBe(true);
+    expect(t.ua).not.toBe(first);
+  });
+
+  it("says which application Enable inbound calls would move the number off", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: sipFlow() });
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
+    t.el("vobiz-auth-token").value = "token";
+    t.el("vobiz-login-btn").click();
+    await flush(16);
+    expect(t.el("inbound-current-app").hidden).toBe(false);
+    expect(t.text("inbound-current-app")).toMatch(/application 20000000000000001/);
+  });
+
+  it("restores a SIP-direct session in SIP-direct mode", async () => {
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: true, mode: "sip", numbers: ["+910000000005"], from: "+910000000005" } } }),
+    });
+    await flush();
+    expect(t.text("vobiz-login-status")).toMatch(/SIP direct/);
+    expect(t.el("inbound-step").hidden).toBe(true);
+  });
+});
+
+describe("caller ID on the INVITE", () => {
+  it("sends the selected caller ID as X-VH-Caller-ID", async () => {
+    const fetch = base({ "/setup-inbound": { body: { number: "+910000000001", previousAppId: "20000000000000001" } } });
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await flush();
+    t.ua.emit("registered");
+    await flush();
+    t.el("dialnumber").value = "+919999988888";
+    t.el("dialbtn").click();
+    await flush();
+    expect(t.ua.calls.at(-1).options.extraHeaders).toEqual(["X-VH-Caller-ID: +910000000001"]);
+
+    t.el("setup-inbound-btn").click();
+    await flush();
+    expect(t.text("inbound-setup-status")).toMatch(/moved off application 20000000000000001/);
   });
 });

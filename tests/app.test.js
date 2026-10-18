@@ -122,7 +122,7 @@ describe("calling is gated on BOTH login and SIP registration", () => {
       iparams: SETTINGS,
       fetch: routes({
         "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: true, numbers: ["+911140848108"], from: "+911140848108", authId: "MA_TEST" } },
+        "/session/": { body: { loggedIn: true, numbers: ["+910000000001"], from: "+910000000001", authId: "MA_TEST0001" } },
         "/recordings/": { body: { objects: [] } },
       }),
     });
@@ -136,7 +136,7 @@ describe("calling is gated on BOTH login and SIP registration", () => {
       iparams: SETTINGS,
       fetch: routes({
         "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: true, numbers: ["+911140848108"], from: "+911140848108", authId: "MA_TEST" } },
+        "/session/": { body: { loggedIn: true, numbers: ["+910000000001"], from: "+910000000001", authId: "MA_TEST0001" } },
         "/recordings/": { body: { objects: [] } },
       }),
     });
@@ -151,7 +151,7 @@ describe("calling is gated on BOTH login and SIP registration", () => {
       iparams: SETTINGS,
       fetch: routes({
         "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: true, numbers: ["+911140848108"], from: "+911140848108", authId: "MA_TEST" } },
+        "/session/": { body: { loggedIn: true, numbers: ["+910000000001"], from: "+910000000001", authId: "MA_TEST0001" } },
         "/recordings/": { body: { objects: [] } },
       }),
     });
@@ -182,7 +182,7 @@ describe("login", () => {
         "/login": { ok: false, status: 401, body: { error: "Invalid Auth ID or Auth Token" } },
       }),
     });
-    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
     t.el("vobiz-auth-token").value = "wrong";
     t.el("vobiz-login-btn").click();
     await flush();
@@ -193,7 +193,7 @@ describe("login", () => {
     const fetch = routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } });
     const t = await boot({ iparams: SETTINGS, fetch });
     const before = fetch.mock.calls.length;
-    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
     t.el("vobiz-auth-token").value = "";
     t.el("vobiz-login-btn").click();
     await flush();
@@ -213,7 +213,7 @@ describe("login", () => {
         "/login": { body: { selected: null } },
       }),
     });
-    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
     t.el("vobiz-auth-token").value = "token";
     t.el("vobiz-login-btn").click();
     await flush();
@@ -227,16 +227,16 @@ describe("login", () => {
       fetch: routes({
         "/agent/": AGENT_OK,
         "/session/": { body: { loggedIn: false } },
-        "/login": { body: { numbers: ["+911140848108", "+911140848109"], selected: "+911140848108" } },
+        "/login": { body: { numbers: ["+910000000001", "+910000000002"], selected: "+910000000001" } },
         "/recordings/": { body: { objects: [] } },
       }),
     });
-    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
     t.el("vobiz-auth-token").value = "token";
     t.el("vobiz-login-btn").click();
     await flush();
     const opts = [...t.el("vobiz-number-select").options].map(o => o.value);
-    expect(opts).toEqual(["+911140848108", "+911140848109"]);
+    expect(opts).toEqual(["+910000000001", "+910000000002"]);
   });
 });
 
@@ -250,13 +250,13 @@ describe("click-to-call", () => {
     const fetch = routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } });
     const t = await boot({ iparams: SETTINGS, fetch });
     t.ua.emit("registered");
-    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
+    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+910000000001" }) } });
     await flush();
 
     expect(t.triggers).toContainEqual(["show", { id: "softphone" }]);
     // The browser is the A leg, so this is a SIP INVITE from here, not a
     // request asking the backend to originate the call.
-    expect(t.ua.calls.at(-1).target).toBe("sip:+911140848108@registrar.vobiz.ai");
+    expect(t.ua.calls.at(-1).target).toBe("sip:+910000000001@registrar.vobiz.ai");
   });
 
   it("does nothing when the payload carries no number", async () => {
@@ -274,7 +274,7 @@ describe("click-to-call", () => {
       iparams: SETTINGS,
       fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
     });
-    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
+    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+910000000001" }) } });
     await flush();
     expect(t.ua.calls).toHaveLength(0);
     expect(t.text("callnum")).toMatch(/not registered yet/i);
@@ -287,7 +287,7 @@ describe("click-to-call", () => {
     });
     t.ua.emit("registered");
     t.ua.call = () => { const e = new Error("Permission denied"); e.name = "NotAllowedError"; throw e; };
-    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
+    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+910000000001" }) } });
     await flush();
     expect(t.text("callnum")).toMatch(/microphone permission was refused/i);
   });
@@ -390,7 +390,7 @@ describe("settings Vobiz requires of the SIP stack", () => {
 
   it("offers STUN on an outbound call", async () => {
     const t = await registered();
-    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
+    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+910000000001" }) } });
     await flush();
     const { options } = t.ua.calls.at(-1);
     expect(options.pcConfig.iceServers[0].urls[0]).toMatch(/^stun:/);
@@ -416,13 +416,13 @@ describe("the session token", () => {
     return routes({
       "/agent/": () => (signedIn ? AGENT_OK : SIGNED_OUT),
       "/session/": { body: { loggedIn: false } },
-      "/login": () => { signedIn = true; return { body: { token: "tok123", numbers: ["+911140848108"], selected: "+911140848108" } }; },
+      "/login": () => { signedIn = true; return { body: { token: "tok123", numbers: ["+910000000001"], selected: "+910000000001" } }; },
       "/recordings/": { body: { objects: [] } },
     });
   }
 
   async function signIn(t) {
-    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-id").value = "MA_TEST0001";
     t.el("vobiz-auth-token").value = "token";
     t.el("vobiz-login-btn").click();
     await flush(16);
@@ -466,7 +466,7 @@ describe("the session token", () => {
       iparams: SETTINGS,
       fetch: routes({
         "/agent/": AGENT_OK,
-        "/session/": { body: { loggedIn: true, numbers: ["+911140848108"], from: "+911140848108", authId: "MA_TEST" } },
+        "/session/": { body: { loggedIn: true, numbers: ["+910000000001"], from: "+910000000001", authId: "MA_TEST0001" } },
         "/recordings/": { body: { objects: [{ recording_id: "rec_a", playUrl: "/recording-audio/priya/rec_a?exp=9&sig=abc" }] } },
       }),
     });

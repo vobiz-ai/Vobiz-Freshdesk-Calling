@@ -6,13 +6,23 @@ All notable changes to this app are documented here. This project follows
 ## [1.1.0] — Unreleased
 
 ### Added
+- **Any Vobiz account can sign in.** The backend no longer holds an account:
+  `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN`, `VOBIZ_FROM_NUMBER`, `VOBIZ_SIP_USER`,
+  `VOBIZ_SIP_PASSWORD` and `AGENTS_FILE` are gone. Sign-in checks the pair with
+  Vobiz, finds or creates this integration's application and the agent's own SIP
+  endpoint in that account, and rotates its password. Webhooks are routed to the
+  right account by SIP username, `ParentAuthID` or dialled number.
+- **SIP direct** sign-in tab: an existing endpoint's username and password plus
+  a typed caller ID, with no account credentials anywhere.
+- The caller-ID picker lists the account's active, voice-enabled numbers (all
+  pages), and the INVITE carries the choice as `X-VH-Caller-ID`.
 - **The calling backend** (`backend/`). The repository previously described a
   backend it did not contain. It runs with `npm run backend`, configured from
   `backend/.env.example`.
 - Outbound calls are bridged through a conference by default, with plain
   `<Dial><Number>` available as `OUTBOUND_MODE=dial`.
-- **Enable inbound calls** now creates or reuses the Vobiz application, attaches
-  the number, and binds the agent's SIP endpoint.
+- **Enable inbound calls** now attaches the number to this integration's
+  application and says which application it moved the number off.
 - Optional call recording (`RECORD_CALLS=1`) and webhook signature checking
   (`VOBIZ_WEBHOOK_SIGNATURE`).
 

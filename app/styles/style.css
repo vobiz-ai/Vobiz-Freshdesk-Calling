@@ -622,3 +622,29 @@ audio#vobiz-remote-audio {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Sign-in mode tabs: "Vobiz account" / "SIP direct". */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.tab.is-active {
+  border-bottom-color: var(--orange-500);
+  color: var(--text);
+  font-weight: 600;
+}

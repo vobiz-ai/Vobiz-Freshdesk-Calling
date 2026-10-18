@@ -16,14 +16,13 @@
  * backend/ is the real one.
  *
  * ---------------------------------------------------------------------------
- * Optional: real SIP registration
+ * SIP registration
  * ---------------------------------------------------------------------------
- * By default /agent/:agentId returns placeholder SIP credentials, so the panel
- * will reach "Registration failed" — everything else still works. To exercise
- * the full audio path, create a SIP endpoint in the Vobiz Console and export:
- *
- *   export VOBIZ_SIP_USER='myendpoint@registrar.vobiz.ai'
- *   export VOBIZ_SIP_PASSWORD='...'
+ * After a "Vobiz account" sign-in, /agent/:agentId returns placeholder SIP
+ * credentials, so the panel reaches "Registration failed" — everything else
+ * still works. To exercise real registration, use the panel's "SIP direct"
+ * tab with an endpoint you own: the mock hands those typed credentials back,
+ * exactly as the real backend does. Nothing is read from the environment.
  *
  * Zero dependencies. Node 18+.
  */
@@ -38,7 +37,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 
 // --- fake state -------------------------------------------------------------
 
-const NUMBERS = ["+911140848108", "+911140848109", "+911140848110"];
+const NUMBERS = ["+910000000001", "+910000000002", "+910000000003"];
 
 /** agentId -> session */
 const sessions = new Map();
@@ -159,13 +158,14 @@ const server = http.createServer(async (req, res) => {
       send(res, 401, { error: "Sign in first" });
       return log(method, path, 401, "no session");
     }
-    const usingReal = Boolean(process.env.VOBIZ_SIP_USER && process.env.VOBIZ_SIP_PASSWORD);
+    const s = sessions.get(agentId) || {};
+    const direct = s.mode === "sip";
     send(res, 200, {
       displayName: `${agentId} (mock)`,
-      sipUser: process.env.VOBIZ_SIP_USER || `${agentId}@registrar.vobiz.ai`,
-      sipPassword: process.env.VOBIZ_SIP_PASSWORD || "mock-password-registration-will-fail",
+      sipUser: direct ? s.sipUser : `${agentId}@registrar.vobiz.ai`,
+      sipPassword: direct ? s.sipPassword : "mock-password-registration-will-fail",
     });
-    return log(method, path, 200, usingReal ? "real SIP creds" : "placeholder SIP creds");
+    return log(method, path, 200, direct ? "typed SIP-direct creds" : "placeholder SIP creds");
   }
 
   // GET /session/:agentId
@@ -174,7 +174,7 @@ const server = http.createServer(async (req, res) => {
     const agentId = decodeURIComponent(m[1]);
     const s = agentFor(req) === agentId ? sessions.get(agentId) : null;
     send(res, 200, s
-      ? { loggedIn: true, numbers: NUMBERS, from: s.from, authId: s.authId }
+      ? { loggedIn: true, mode: s.mode, numbers: s.mode === "sip" ? [s.from] : NUMBERS, from: s.from, authId: s.authId || null }
       : { loggedIn: false });
     return log(method, path, 200, s ? "logged in" : "no session");
   }
@@ -193,11 +193,26 @@ const server = http.createServer(async (req, res) => {
       send(res, 401, { error: "Invalid Auth ID or Auth Token" });
       return log(method, path, 401, "forced failure");
     }
-    sessions.set(agentId, { authId, from: NUMBERS[0] });
+    sessions.set(agentId, { mode: "account", authId, from: NUMBERS[0] });
     const token = require("node:crypto").randomBytes(16).toString("hex");
     tokens.set(token, agentId);
-    send(res, 200, { token, numbers: NUMBERS, selected: NUMBERS[0] });
+    send(res, 200, { token, mode: "account", numbers: NUMBERS, numberDetails: NUMBERS.map(e164 => ({ e164, applicationId: null })), selected: NUMBERS[0] });
     return log(method, path, 200, `agent=${agentId}`);
+  }
+
+  // POST /login-sip — SIP direct: typed endpoint credentials and caller ID.
+  if (path === "/login-sip" && method === "POST") {
+    const { agentId, sipUser, sipPassword, callerId } = await readJson(req).catch(() => ({}));
+    if (!agentId || !sipUser || !sipPassword || !/^\+\d{8,15}$/.test(String(callerId || ""))) {
+      send(res, 400, { error: "agentId, sipUser, sipPassword and an E.164 callerId are all required" });
+      return log(method, path, 400, "missing fields");
+    }
+    const user = String(sipUser).includes("@") ? String(sipUser) : `${sipUser}@registrar.vobiz.ai`;
+    sessions.set(agentId, { mode: "sip", from: callerId, sipUser: user, sipPassword });
+    const token = require("node:crypto").randomBytes(16).toString("hex");
+    tokens.set(token, agentId);
+    send(res, 200, { token, mode: "sip", numbers: [callerId], selected: callerId });
+    return log(method, path, 200, `agent=${agentId} (SIP direct)`);
   }
 
   // POST /select-number
@@ -275,7 +290,7 @@ const server = http.createServer(async (req, res) => {
   //   From = number → a PSTN caller            → <Dial><User>, callerId = the DID
   if (path === "/answer" || path === "/inbound-answer") {
     const params = Object.fromEntries(url.searchParams);
-    const sipUser = process.env.VOBIZ_SIP_USER || "agent@registrar.vobiz.ai";
+    const sipUser = "agent@registrar.vobiz.ai";
     const from = String(params.From || "");
     const to = String(params.To || "").replace(/[^\d]/g, "");
     const inner = from.startsWith("sip:")
@@ -296,12 +311,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  const real = Boolean(process.env.VOBIZ_SIP_USER && process.env.VOBIZ_SIP_PASSWORD);
   console.log("");
   console.log("  Vobiz mock calling backend");
   console.log("  ──────────────────────────");
   console.log(`  Listening       http://${HOST}:${PORT}`);
-  console.log(`  SIP identity    ${real ? "real (from VOBIZ_SIP_USER)" : "placeholder — SIP registration will fail"}`);
+  console.log("  SIP identity    placeholder after account sign-in; SIP direct uses what you type");
   console.log(`  Numbers         ${NUMBERS.join(", ")}`);
   console.log(`  Mock call runs  ${CALL_DURATION_MS / 1000}s`);
   console.log("");

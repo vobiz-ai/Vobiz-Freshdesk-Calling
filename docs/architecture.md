@@ -39,15 +39,19 @@ write tickets — see [what is missing](#what-is-missing).
 2. The panel sends a SIP INVITE for that number from the browser — **the
    browser is the A leg**.
 3. Vobiz fetches the answer URL of the application the agent's SIP endpoint is
-   bound to: the backend's `/answer`.
-4. The backend sees `From: sip:…`, puts the agent's leg in a conference room of
-   its own, and dials the customer over the REST API with the agent's chosen
-   caller ID.
+   bound to: the backend's `/answer`. Sign-in made that binding, in the agent's
+   own account.
+4. The backend sees `From: sip:…`, looks the SIP username up to find the agent
+   and their account, puts the agent's leg in a conference room of its own, and
+   dials the customer over the REST API — as that account — with the agent's
+   chosen caller ID (also on the INVITE as `X-VH-Caller-ID`).
 5. The customer answers; Vobiz fetches `/outbound-join`, and they join the room.
 6. Either side hanging up ends the call for both. If the customer never answers,
    the backend hangs up the agent's leg.
 
-`OUTBOUND_MODE=dial` replaces steps 4–5 with a single `<Dial><Number>`. It is
+`OUTBOUND_MODE=dial` replaces steps 4–5 with a single `<Dial><Number>`, and
+SIP-direct agents always get it, since there are no account credentials for the
+REST leg. It is
 simpler, but a `<Dial>` bridged from a WebRTC leg was measured losing the phone
 side's audio on three of five calls, which is why the conference is the default.
 
@@ -57,16 +61,17 @@ endpoint, and the customer would hear ringback while the agent was found.
 
 ## An inbound call
 
-The agent clicks **Enable inbound calls** once. The backend creates (or reuses)
-a Vobiz application pointing at its `/answer`, attaches the agent's selected
-number to it, and binds the agent's endpoint to it. A call to that number then
-reaches `/answer` with a plain number in `From`, and the backend answers:
+The agent clicks **Enable inbound calls** once. The backend attaches the agent's
+selected number to this integration's application in their account (the panel
+says which application the number was on before). A call to that number then
+reaches `/answer` with a plain number in `From` and the account in
+`ParentAuthID`, and the backend rings every signed-in agent of that account:
 
 ```xml
-<Dial callerId="<the dialled number>" …><User>sip:<agent endpoint></User></Dial>
+<Dial callerId="<the dialled number>" …><User>sip:<agent endpoint></User>…</Dial>
 ```
 
-Vobiz rings the registered browser, and the panel answers automatically.
+Vobiz rings the registered browsers, and the panel answers automatically.
 
 Two things this depends on, both handled:
 

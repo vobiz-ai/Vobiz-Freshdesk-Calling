@@ -7,8 +7,9 @@ What this app does not do yet, so nobody is surprised. Pull requests welcome.
 | 1 | Inbound calls auto-answer, with no ring, caller ID, or Accept/Decline | Panel |
 | 2 | Nothing is written back into Freshdesk — no tickets, notes, or screen pop | Panel |
 | 3 | During an outbound call the panel shows *On a call* while the customer's phone is still ringing | Panel + backend |
-| 4 | Sessions live in the backend's memory: one instance only, and a restart signs everyone out | Backend |
+| 4 | Sessions and Auth Tokens live in the backend's memory: one instance only, and a restart signs everyone out | Backend |
 | 5 | No hold, mute, transfer, or conference controls | Panel + backend |
+| 6 | SIP direct sign-in cannot be verified by the backend, and has no recordings or inbound setup | Backend |
 
 ## 1. Inbound calls auto-answer
 
@@ -35,6 +36,15 @@ needs a status route or a SIP INFO.
 Keeping sessions in memory keeps credentials off disk, at the cost of horizontal
 scaling and surviving restarts. A shared store (Redis, a database) would lift
 both; encrypt anything sensitive at rest if you add one.
+
+## 6. SIP direct is a claim, not a proof
+
+SIP direct has no account credentials, so the backend cannot check that the
+typed endpoint or caller ID belong together; the registrar checks the password
+and Vobiz checks the caller ID only when a call is placed. Inbound calls to a
+SIP-direct agent's number ring whoever signed in with it most recently. It can
+never take over an endpoint a Vobiz account sign-in provisioned. On a backend
+shared by several companies, prefer the **Vobiz account** tab.
 
 ---
 
