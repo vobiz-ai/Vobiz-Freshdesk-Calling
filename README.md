@@ -130,10 +130,11 @@ call notes or look up contacts. See [Limitations](#limitations).
    | Setting | Value |
    | --- | --- |
    | **Calling backend URL** | `https://calling.example.com`, with no trailing slash |
-   | **Agent identity** | A short name with no spaces, slashes or colons, for example `support` |
    | **SIP registrar URL (optional)** | Leave blank. It defaults to `wss://registrar.vobiz.ai:5063/` |
 
-   [docs/install.md](docs/install.md) walks through these screens step by step.
+   There is nothing to set per agent: each agent's own Freshdesk login decides
+   which SIP line they get. [docs/install.md](docs/install.md) walks through
+   these screens step by step.
 
 7. **Sign in.** Open any agent page in Freshdesk and click the Vobiz icon at the
    bottom left. On the **Vobiz account** tab, enter your Auth ID and Auth Token
@@ -176,11 +177,19 @@ The first time anyone signs in, the backend creates these in your Vobiz account:
 | What | Details |
 | --- | --- |
 | **One application** | Named `Freshdesk-Calling`. You can change the name with `VOBIZ_APP_NAME`. Its answer URL and hangup URL are both `https://calling.example.com/answer` (method `POST`). If an application with that answer URL already exists, the backend reuses it. It never changes an application that it did not create. |
-| **One SIP endpoint per agent identity** | Alias `Freshdesk-<agent identity>`, with a username that starts with `fd`. The endpoint is attached to the application above. The backend reuses this endpoint on later sign-ins. |
+| **One SIP endpoint per Freshdesk agent** | Alias `Freshdesk-fd<Freshdesk user ID>`, with a username that starts with `fd`. The endpoint is attached to the application above. The backend reuses this endpoint on later sign-ins. |
 
-Each sign-in gives the endpoint a new random SIP password. Only that browser
-session receives it. A new sign-in with the same account and agent identity
-ends the previous session.
+The panel reads the logged-in Freshdesk agent and signs in as `fd<their user
+ID>`, so colleagues who share one Vobiz account each get their own line and
+never sign each other out. Each sign-in gives the endpoint a new random SIP
+password. Only that browser session receives it. Signing in again as the same
+Freshdesk agent (for example in a second tab) ends the previous session.
+
+**Sign out.** Click **Sign out** under the sign-in form. The panel ends any call,
+tells the backend, unregisters from Vobiz so inbound calls stop ringing that
+browser, and returns to **Signed out**. When the last agent of a Vobiz account
+signs out, or their session expires, the backend drops that account's Auth
+Token from memory — after any outbound call still in progress has ended.
 
 **Choose a caller ID.** The **Calling from** list shows every active,
 voice-enabled number on the account. Your outbound calls come from the number
@@ -190,8 +199,10 @@ your choice for your next sign-in, until the backend restarts.
 **Enable inbound calls.** Click **Enable inbound calls** once for each number.
 This attaches the selected number to the `Freshdesk-Calling` application, so
 calls to it ring the panel. Attaching the number **moves it off the application
-it is on now**. Before you click, the panel shows that application's ID: *"+91XXXXXXXXXX
-is attached to application … now; enabling moves it to this panel's."* Anything
+it is on now**. Before you click, the panel names that application, with its ID:
+*"+91XXXXXXXXXX is attached to application "My IVR" (…) now; enabling moves it to
+this panel's."* (only the ID if the name can't be read), or says the number
+already rings this panel. Anything
 that number did before, such as an IVR or another integration, stops. Nothing
 moves until you click the button.
 
@@ -260,9 +271,12 @@ when you are signed in **and** the panel is registered. If either is missing,
 the hint under the button says which. Your browser asks for microphone access
 on the first call. Click **Hang up** to end the call.
 
-With the default conference bridge, the panel shows **On a call** as soon as
-your side connects. You hear silence until the customer answers. If the
-customer doesn't answer, the backend ends your side of the call.
+With the default conference bridge, your side joins a private room first and
+the customer is then dialled into it. The panel shows **Ringing** while their
+phone rings (you hear silence) and **On a call** once they answer. If the
+customer doesn't answer, the backend ends your side of the call. With SIP
+direct or `OUTBOUND_MODE=dial` the panel can't see the customer's leg, so it
+shows **On a call** as soon as your side connects.
 
 **Taking a call.** Keep a Freshdesk tab open with the panel signed in and
 showing **Ready**. When a call reaches your number, every agent signed in to
@@ -303,8 +317,9 @@ in the environment takes priority over the file.
 | `ALLOWED_ORIGINS` | No | none | Extra browser origins that can call the backend, separated by commas. You can write wildcards as `https://*.example.com`. Origins on `*.freshdesk.com`, `*.myfreshworks.com`, `*.freshworks.com` and `localhost` are already allowed. |
 | `VOBIZ_API_BASE` | No | `https://api.vobiz.ai` | The Vobiz API host. Change it only if Vobiz support asks you to. |
 
-The Freshdesk app has three installation parameters: **Calling backend URL**,
-**Agent identity** and **SIP registrar URL (optional)**. To change them later, go to
+The Freshdesk app has two installation parameters: **Calling backend URL** and
+**SIP registrar URL (optional)**. There is no per-agent setting: the agent
+identity is `fd<Freshdesk user ID>` of whoever is logged in. To change them later, go to
 **Admin → Apps → Manage Apps → Custom → Vobiz Calling → Settings → Configure**.
 
 ## Deploying to production
@@ -317,8 +332,8 @@ The Freshdesk app has three installation parameters: **Calling backend URL**,
 - **Run exactly one instance.** Sessions, signed-in accounts and active calls
   are held in memory. With a second instance behind a load balancer, webhooks
   and sign-ins land on different processes, and calls fail.
-- **Keep `DATA_DIR` on persistent storage.** It maps each account and agent
-  identity to that agent's endpoint, so agents get the same endpoint after a
+- **Keep `DATA_DIR` on persistent storage.** It maps each account and Freshdesk
+  agent to that agent's endpoint, so agents get the same endpoint after a
   restart. If you lose it, the backend finds the endpoints again by their
   aliases.
 - **Set `SIGNING_SECRET`** to a fixed random value.
@@ -340,14 +355,15 @@ The Freshdesk app has three installation parameters: **Calling backend URL**,
 - **Your Auth Token never leaves the backend and is never stored on disk.** The
   panel sends it once, at sign-in. The backend keeps it in memory, never logs it,
   never returns it to the browser, and never puts it in a URL. It stays in
-  memory until the backend restarts.
+  memory only while an agent of that account is signed in (or a call they
+  placed is still up), and is dropped at sign-out or session expiry.
 - **The panel stores nothing.** It uses no cookies, `localStorage` or
   `sessionStorage`. The session token from sign-in lives in the page's memory
   and disappears when the tab reloads.
 - **Everything the browser asks for requires that session token.** That
-  includes the SIP password. An agent identity on its own gets nothing.
+  includes the SIP password. An agent identity (`fd<user ID>`) on its own gets nothing.
 - **The browser receives:** a session token, the account's phone numbers and
-  the ID of the application each number is attached to, its own endpoint's SIP
+  the ID and name of the application each number is attached to, its own endpoint's SIP
   username and current password, and signed playback links.
 - **On disk**, the backend keeps only `DATA_DIR/endpoints.json`. That file holds
   endpoint IDs and usernames, with no passwords or tokens, and has file mode
@@ -374,7 +390,8 @@ The log prints every webhook with its `CallUUID`.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| "Not configured — set the Backend URL and Agent Identity…" | An installation parameter is empty | Fill in both under **Manage Apps → Custom → Vobiz Calling → Settings**. |
+| "Not configured — set the Calling backend URL…" | The installation parameter is empty | Fill it in under **Manage Apps → Custom → Vobiz Calling → Settings**. |
+| "Could not identify the signed-in Freshdesk agent" | Freshdesk did not return the logged-in agent to the app | Reload the Freshdesk page. |
 | "Backend URL must start with https://" | The URL has no scheme, or uses `http` for a host other than localhost | Enter the full `https://…` URL. |
 | "Cannot reach the calling backend" | The backend is down, the URL is wrong, or the backend refused the page's origin | Check `curl https://calling.example.com/health`. If the log says `origin … is not allowed`, add that origin to `ALLOWED_ORIGINS`. |
 | "Login failed: Vobiz did not accept that Auth ID and Auth Token" | Wrong credentials, or you used the Console password | Copy both again from Console → **API credentials**. |
@@ -382,7 +399,7 @@ The log prints every webhook with its `CallUUID`.
 | "Login failed: Could not set up this agent's phone line…" | Vobiz refused to create the application or endpoint | The backend log shows Vobiz's status code. Check the account's permissions and balance. |
 | "Logged in … — this account has no phone numbers yet", and **Call** stays disabled | The account has no active, voice-enabled number | Buy or activate a number, then sign in again. |
 | "Registration failed: …" | The SIP password was rejected, or WebSocket traffic to the registrar is blocked | With a Vobiz account, sign in again, because each sign-in sets a new password. With SIP direct, check the username and password. Allow `wss://registrar.vobiz.ai:5063`. |
-| An agent keeps getting signed out, or registration fails after a colleague signs in | Two people signed in with the same Vobiz account and the same agent identity | See [Limitations](#limitations). Only one agent per Vobiz account can use an agent identity at a time. Use SIP direct for the others. |
+| The panel signs out, or registration fails, after you open it in another tab | Each Freshdesk agent has one session; a new sign-in replaces the previous one | Use the panel in one tab at a time. |
 | Outbound call ends at once, and the backend log says "no signed-in agent holds" | The backend restarted, or the session expired | Sign in again. |
 | Outbound call fails, and no `/answer` webhook appears in the backend log | The endpoint is not attached to an application whose answer URL is `/answer` | With a Vobiz account, sign in again (the log says whether the attach worked). With SIP direct, attach the endpoint as in [SIP direct](#sip-direct). |
 | You hear "The call could not be placed." | Vobiz refused the call to the customer | The log shows Vobiz's reason. Check the balance, the destination number and the caller ID. |
@@ -390,7 +407,7 @@ The log prints every webhook with its `CallUUID`.
 | Inbound callers hear "Sorry, nobody is available…" | Nobody is signed in to the account that owns the number | Sign in, and keep the panel open. |
 | Inbound callers hear ringing, but the panel never rings | The number is not attached to the application, or no panel is open and registered | Click **Enable inbound calls**. With SIP direct, attach the number in the Console. Keep the tab open. |
 | Connected but no audio, or "Could not answer — microphone permission was refused" | The browser blocked the microphone | Allow the microphone for Freshdesk in the address bar, then reload. |
-| A recording won't play, or "sign in again" | The link expired after 5 minutes, or nobody from that account has signed in since a restart | Click the refresh button on the list, or sign in again. |
+| A recording won't play, or "sign in again" | The link expired after 5 minutes, or nobody from that account is signed in right now | Click the refresh button on the list, or sign in again. |
 | Webhooks get `403`, and the log says "rejected" | `VOBIZ_WEBHOOK_SIGNATURE=require` with a `PUBLIC_BASE` that doesn't match the URL Vobiz calls, or nobody signed in with a Vobiz account | Fix `PUBLIC_BASE`, or set the mode to `log`. |
 
 ## Limitations
@@ -401,17 +418,12 @@ The log prints every webhook with its `CallUUID`.
 - **Inbound calls answer themselves.** The panel doesn't ring first, doesn't
   show the caller's number, and has no Accept or Decline buttons.
 - **There are no hold, mute, transfer or conference controls.**
-- **The agent identity is shared by everyone in your Freshdesk account.**
-  Freshdesk installation parameters apply to the whole account. On the **Vobiz
-  account** tab, only one person per Vobiz account can be signed in under that
-  identity at a time, because a new sign-in ends the previous one. To give
-  several agents their own lines in one Freshdesk account, give each agent a SIP
-  endpoint and have them use **SIP direct**.
 - **Sign in again after reloading the page,** after the backend restarts, and
   after `SESSION_TTL_HOURS` (12 hours by default).
 - **Run one backend instance.** Sessions and Auth Tokens are held in memory.
-- **With the conference bridge, the panel shows "On a call" while the customer's
-  phone is still ringing.**
+- **With SIP direct or `OUTBOUND_MODE=dial`, the panel shows "On a call" while
+  the customer's phone is still ringing.** Only the conference bridge reports
+  when the customer answers.
 - **SIP direct has no recordings list, no caller-ID list and no
   Enable inbound calls,** and outbound calls always use a plain dial. Inbound calls
   to a SIP-direct number ring the agents signed in with that caller ID.

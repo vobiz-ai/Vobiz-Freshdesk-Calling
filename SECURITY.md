@@ -18,7 +18,7 @@ This repository contains the Freshdesk panel (`app/`) and the calling backend
 
 - **The panel stores nothing.** No credentials in `localStorage`,
   `sessionStorage` or cookies. The session token from sign-in lives in memory.
-- **`agentId` is not identity.** It is a guessable string. Every browser route
+- **`agentId` is not identity.** It is `fd<Freshdesk user ID>`, a guessable string. Every browser route
   on the backend needs the bearer token issued at sign-in, and the SIP password
   is served only to the agent it belongs to.
 - **Recordings are reached only through signed, expiring links**, and the

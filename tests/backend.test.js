@@ -9,7 +9,7 @@
  * asked Vobiz for, as which account — and, for the security cases, that it
  * asked for nothing.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -269,7 +269,8 @@ describe("the caller ID picker (account mode)", () => {
     await start();
     const { data } = await login("priya", ONE);
     expect(data.numbers).toEqual(ONE.numbers);
-    expect(data.numberDetails).toEqual(ONE.numbers.map(e164 => ({ e164, applicationId: "20000000000000001" })));
+    // 20000000000000001 is not in the account's application list, so it has no name.
+    expect(data.numberDetails).toEqual(ONE.numbers.map(e164 => ({ e164, applicationId: "20000000000000001", applicationName: null, thisPanel: false })));
   });
 
   it("pages through the whole list", async () => {
@@ -1004,5 +1005,141 @@ describe("helpers", () => {
     expect(cleanPhone("+1 555 0100 123")).toBe("+15550100123");
     expect(cleanPhone("12")).toBe("");
     expect(vhParam({ "sipheader_x-vh-caller-id": "+910000000001" }, "X-VH-Caller-ID")).toBe("+910000000001");
+  });
+});
+
+describe("the agent identity", () => {
+  beforeEach(() => start());
+
+  it("accepts the panel's fd<user id> and refuses anything that could break a path or alias", async () => {
+    await login("fd1001", ONE);
+    for (const bad of ["a b", "../x", "fd:1", "-lead", "x".repeat(65)]) {
+      const res = await post("/login", { agentId: bad, authId: ONE.authId, authToken: ONE.token });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/letters, digits/);
+    }
+    expect((await post("/login-sip", { agentId: "a/b", sipUser: "ravidesk", sipPassword: "p", callerId: "+910000000005" })).status).toBe(400);
+  });
+
+  it("gives two Freshdesk agents on one Vobiz account two lines, and neither signs the other out", async () => {
+    const a = await login("fd1001", ONE);
+    const b = await login("fd1002", ONE);
+    expect(a.sipUsername).not.toBe(b.sipUsername);
+    expect((await get("/agent/fd1001", a.auth)).status).toBe(200);
+    expect((await get("/agent/fd1002", b.auth)).status).toBe(200);
+  });
+
+  it("shows the agent's Freshdesk name, cleaned, and falls back to the identity", async () => {
+    const res = await post("/login", { agentId: "fd1001", displayName: " Priya <b>\u0007 ", authId: ONE.authId, authToken: ONE.token });
+    const { token } = await res.json();
+    expect((await (await get("/agent/fd1001", { Authorization: `Bearer ${token}` })).json()).displayName).toBe("Priya b");
+    const { agent } = await login("fd1002", ONE);
+    expect(agent.displayName).toBe("fd1002");
+  });
+});
+
+describe("signing out forgets the account's Auth Token", () => {
+  const recordingApi = {
+    "/Recording/?limit": () => json(200, { objects: [{ recording_id: "rec1" }] }),
+    "/Recording/rec1/": () => json(200, { recording_url: "https://media.vobiz.ai/rec1.mp3" }),
+    "media.vobiz.ai": () => new Response(Buffer.from("ID3audio"), { status: 200, headers: { "content-type": "audio/mpeg" } }),
+  };
+  const link = async auth => (await (await get("/recordings/fd1001", auth)).json()).objects[0].playUrl;
+
+  it("when the last agent of the account signs out", async () => {
+    await start(config(), recordingApi);
+    const a = await login("fd1001", ONE);
+    const b = await login("fd1002", ONE);
+    const url = await link(a.auth);
+    await post("/logout", {}, a.auth);
+    // Another agent of the account is still in, so the account stays usable.
+    expect((await get(url)).status).toBe(200);
+    expect((await get("/agent/fd1002", b.auth)).status).toBe(200);
+    await post("/logout", {}, b.auth);
+    const res = await get(url);
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toMatch(/Nobody is signed in/);
+    expect(logs.join("\n")).toMatch(new RegExp(`${ONE.authId}: no agent signed in — Auth Token dropped`));
+  });
+
+  it("but not while an outbound call of that account is still in its room", async () => {
+    await start();
+    const a = await login("fd1001", ONE);
+    await form("/answer", { CallUUID: "abc-123", From: `sip:${a.sipUsername}@registrar.vobiz.ai`, To: "919999988888" });
+    await post("/logout", {}, a.auth);
+    expect(logs.join("\n")).not.toMatch(/Auth Token dropped/);
+    // The customer never answered: the agent's leg is released as the account.
+    await form("/outbound-hangup?room=fdabc123", { HangupCause: "NO_ANSWER" });
+    const del = vobiz.requests.find(r => r.method === "DELETE");
+    expect(del.headers["X-Auth-Token"]).toBe(ONE.token);
+    expect(logs.join("\n")).toMatch(/Auth Token dropped/);
+  });
+
+  it("when the last session expires, with no sign-out", async () => {
+    await start(config({ SESSION_TTL_HOURS: "0.000001" })); // 3.6 ms
+    await login("fd1001", ONE);
+    await new Promise(r => setTimeout(r, 20));
+    await get("/health");
+    expect(logs.join("\n")).toMatch(/Auth Token dropped/);
+  });
+
+  it("when a room's hangup webhook never arrives", async () => {
+    await start();
+    const a = await login("fd1001", ONE);
+    await form("/answer", { CallUUID: "abc-123", From: `sip:${a.sipUsername}@registrar.vobiz.ai`, To: "919999988888" });
+    await post("/logout", {}, a.auth);
+    expect(logs.join("\n")).not.toMatch(/Auth Token dropped/);
+    const now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now + 5 * 3600 * 1000);
+    try {
+      await get("/health");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(logs.join("\n")).toMatch(/Auth Token dropped/);
+  });
+
+  it("keeps the account through a sign-in that replaces the agent's own session", async () => {
+    await start(config(), recordingApi);
+    await login("fd1001", ONE);
+    const again = await login("fd1001", ONE);
+    expect((await get(await link(again.auth))).status).toBe(200);
+    expect(logs.join("\n")).not.toMatch(/Auth Token dropped/);
+  });
+});
+
+describe("call status during an outbound call", () => {
+  const REF = "0123456789abcdef01234567";
+
+  it("is ringing until the customer joins the room, then connected", async () => {
+    await start();
+    const a = await login("fd1001", ONE);
+    const b = await login("fd1002", ONE);
+    await form("/answer", { CallUUID: "abc-123", From: `sip:${a.sipUsername}@registrar.vobiz.ai`, To: "919999988888", "X-VH-Call-Ref": REF });
+    expect(await (await get(`/call-status/${REF}`, a.auth)).json()).toEqual({ active: true, state: "ringing" });
+    // Only the agent who placed it can see it.
+    expect(await (await get(`/call-status/${REF}`, b.auth)).json()).toEqual({ active: false });
+    await form("/outbound-join?room=fdabc123", { CallUUID: "cust-1" });
+    expect(await (await get(`/call-status/${REF}`, a.auth)).json()).toEqual({ active: true, state: "connected" });
+  });
+
+  it("ignores a malformed call reference", async () => {
+    await start();
+    const a = await login("fd1001", ONE);
+    await form("/answer", { CallUUID: "abc-123", From: `sip:${a.sipUsername}@registrar.vobiz.ai`, To: "919999988888", "X-VH-Call-Ref": "short" });
+    expect(await (await get("/call-status/short", a.auth)).json()).toEqual({ active: false });
+  });
+});
+
+describe("application names for the inbound hint", () => {
+  it("names the application each number is on, and the one Enable inbound calls moved it off", async () => {
+    await start();
+    vobiz.state[ONE.authId].apps.push({ app_id: "20000000000000001", app_name: "Old IVR", answer_url: "https://elsewhere.example.com/x" });
+    const { data, auth } = await login("fd1001", ONE);
+    expect(data.numberDetails[0]).toEqual({ e164: ONE.numbers[0], applicationId: "20000000000000001", applicationName: "Old IVR", thisPanel: false });
+    const r = await (await post("/setup-inbound", {}, auth)).json();
+    expect(r).toMatchObject({ previousAppId: "20000000000000001", previousAppName: "Old IVR" });
+    const s = await (await get("/session/fd1001", auth)).json();
+    expect(s.numberDetails[0]).toMatchObject({ applicationId: ONE.appId, thisPanel: true });
   });
 });

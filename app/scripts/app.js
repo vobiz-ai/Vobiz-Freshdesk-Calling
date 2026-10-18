@@ -5,8 +5,10 @@
  * it starts a call when an agent clicks a phone number anywhere in Freshdesk
  * (Freshdesk emits `cti.triggerDialer`).
  *
- * Every value this app needs is an installation parameter — see
- * config/iparams.json. Nothing about a particular account is compiled in.
+ * The backend URL is an installation parameter (config/iparams.json). The
+ * agent identity is not: it is derived from the Freshdesk agent logged in to
+ * this browser (`fd<user id>`), so every agent gets their own SIP line in the
+ * Vobiz account they sign in with. Nothing about an account is compiled in.
  *
  * This app is a client. It cannot place a call on its own: it talks to a
  * calling backend that answers Vobiz's webhooks and, for an agent signed in
@@ -20,6 +22,7 @@
  */
 let BACKEND_URL = null;
 let AGENT_ID = null;
+let AGENT_NAME = null;
 let REGISTRAR_URL = null;
 
 let client;
@@ -42,8 +45,11 @@ let sessionToken = null;
 let signInMode = "account";
 // The caller ID calls go out from, also sent on the INVITE as X-VH-Caller-ID.
 let selectedCallerId = null;
-// number -> the application it is attached to now, from the account's list.
+// number -> { id, name, thisPanel } for the application it is attached to now.
 let numberApps = {};
+// Polls /call-status while an outbound call waits for the customer to join.
+let callStatusTimer = null;
+const CALL_STATUS_POLL_MS = 1500;
 
 /**
  * Every backend call goes through here.
@@ -69,11 +75,10 @@ async function init() {
 
   const iparams = await client.iparams.get();
   BACKEND_URL = (iparams.backend_url || "").trim().replace(/\/+$/, "");
-  AGENT_ID = (iparams.agent_id || "").trim();
   REGISTRAR_URL = (iparams.registrar_url || "wss://registrar.vobiz.ai:5063/").trim();
 
-  if (!BACKEND_URL || !AGENT_ID) {
-    setStatus("Not configured — set the Backend URL and Agent Identity in this app's settings.");
+  if (!BACKEND_URL) {
+    setStatus("Not configured — set the Calling backend URL in this app's settings.");
     return;
   }
   // A bare hostname would resolve relative to the Freshdesk app origin and
@@ -86,6 +91,14 @@ async function init() {
     return;
   }
 
+  const me = await loggedInAgent();
+  if (!me) {
+    setStatus("Could not identify the signed-in Freshdesk agent — reload the page.");
+    return;
+  }
+  AGENT_ID = me.id;
+  AGENT_NAME = me.name;
+
   client.events.on("cti.triggerDialer", onTriggerDialer);
   document.getElementById("dialbtn").addEventListener("click", onDialButtonClick);
   document.getElementById("vobiz-login-btn").addEventListener("click", vobizLogin);
@@ -96,6 +109,7 @@ async function init() {
   document.getElementById("setup-inbound-btn").addEventListener("click", setupInboundCalling);
   document.getElementById("refresh-history-btn").addEventListener("click", loadCallHistory);
   document.getElementById("hangupbtn").addEventListener("click", hangUp);
+  document.getElementById("signout-btn").addEventListener("click", signOut);
 
   // Leave the registrar cleanly. Without this the binding lingers until it
   // expires (JsSIP defaults to 600s) and inbound calls route to a dead leg
@@ -106,6 +120,28 @@ async function init() {
 
   initVobizSip();
   restoreVobizSession();
+}
+
+/**
+ * Who this panel is: the Freshdesk agent logged in to this browser. Each
+ * agent's id becomes their own identity on the backend (`fd<id>`), so two
+ * agents on one Vobiz account get two SIP lines and never sign each other out.
+ * The data method resolves to `{ loggedInUser: {...} }`; the bare object is
+ * accepted too.
+ */
+async function loggedInAgent() {
+  try {
+    const data = await client.data.get("loggedInUser");
+    const user = (data && data.loggedInUser) || data || {};
+    const id = String(user.id === null || user.id === undefined ? "" : user.id).replace(/[^A-Za-z0-9]/g, "");
+    if (!id) return null;
+    const contact = user.contact || {};
+    const name = String(contact.name || user.display_name || contact.email || user.email || "").trim();
+    return { id: `fd${id}`, name: name || null };
+  } catch (err) {
+    console.error("[Vobiz] Could not read the logged-in Freshdesk agent:", err);
+    return null;
+  }
 }
 
 /** === Vobiz account sign-in (Auth ID / Auth Token) ===
@@ -147,8 +183,17 @@ function applySignInMode(mode) {
 
 function rememberNumberApps(details) {
   numberApps = {};
-  (details || []).forEach(d => { if (d && d.e164) numberApps[d.e164] = d.applicationId || null; });
+  (details || []).forEach(d => {
+    if (d && d.e164 && d.applicationId) {
+      numberApps[d.e164] = { id: d.applicationId, name: d.applicationName || null, thisPanel: Boolean(d.thisPanel) };
+    }
+  });
   renderInboundHint();
+}
+
+/** "Old IVR" (1234…) when the backend found the name, the bare id otherwise. */
+function appLabel(id, name) {
+  return name ? `"${name}" (${id})` : String(id);
 }
 
 /** Says which application "Enable inbound calls" would move the number off. */
@@ -157,7 +202,9 @@ function renderInboundHint() {
   if (!el) return;
   const app = selectedCallerId && numberApps[selectedCallerId];
   el.hidden = !app;
-  el.textContent = app ? `${selectedCallerId} is attached to application ${app} now; enabling moves it to this panel's.` : "";
+  if (!app) el.textContent = "";
+  else if (app.thisPanel) el.textContent = `${selectedCallerId} already rings this panel.`;
+  else el.textContent = `${selectedCallerId} is attached to application ${appLabel(app.id, app.name)} now; enabling moves it to this panel's.`;
 }
 
 function renderNumberOptions(numbers, selected) {
@@ -182,6 +229,11 @@ function renderNumberOptions(numbers, selected) {
 function setDialEnabled(enabled) {
   accountReady = Boolean(enabled);
   refreshDialState();
+}
+
+function setSignOutVisible(visible) {
+  const btn = document.getElementById("signout-btn");
+  if (btn) btn.hidden = !visible;
 }
 
 function refreshDialState() {
@@ -230,6 +282,7 @@ async function restoreVobizSession() {
         ? `Connected over SIP direct — calling from ${session.from}`
         : `Logged in as ${session.authId} — calling from ${session.from}`);
       setDialEnabled(true);
+      setSignOutVisible(true);
       if (session.mode !== "sip") loadCallHistory();
     } else {
       setDialEnabled(false);
@@ -251,7 +304,7 @@ async function vobizLogin() {
     const res = await backendFetch(`${BACKEND_URL}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agentId: AGENT_ID, authId, authToken }),
+      body: JSON.stringify({ agentId: AGENT_ID, displayName: AGENT_NAME, authId, authToken }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `login failed (${res.status})`);
@@ -265,6 +318,8 @@ async function vobizLogin() {
         : `Logged in as ${authId} — this account has no phone numbers yet`,
     );
     setDialEnabled(Boolean(data.selected));
+    setSignOutVisible(true);
+    document.getElementById("vobiz-auth-token").value = "";
     if (data.selected) loadCallHistory();
     // The backend hands out the SIP identity only to a signed-in panel, and
     // every sign-in rotates the SIP password, so (re)register now.
@@ -299,7 +354,7 @@ async function sipDirectLogin() {
     const res = await backendFetch(`${BACKEND_URL}/login-sip`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agentId: AGENT_ID, sipUser, sipPassword, callerId }),
+      body: JSON.stringify({ agentId: AGENT_ID, displayName: AGENT_NAME, sipUser, sipPassword, callerId }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `sign-in failed (${res.status})`);
@@ -309,12 +364,55 @@ async function sipDirectLogin() {
     renderNumberOptions(data.numbers, data.selected);
     setLoginStatus(`Connected over SIP direct — calling from ${data.selected}`);
     setDialEnabled(Boolean(data.selected));
+    setSignOutVisible(true);
+    document.getElementById("sip-password").value = "";
     restartSip();
   } catch (err) {
     console.error("[Vobiz] SIP direct sign-in failed:", err);
     setLoginStatus(`Sign-in failed: ${err.message}`);
     setDialEnabled(false);
   }
+}
+
+/**
+ * Sign out: end any call, tell the backend (which forgets the session, and the
+ * account's Auth Token once its last agent is out), leave the registrar so
+ * inbound calls stop ringing this browser, and return to Signed out. The panel
+ * signs out locally even when the backend cannot be reached.
+ */
+async function signOut() {
+  if (currentRTCSession) {
+    try { currentRTCSession.terminate(); } catch { /* already gone */ }
+    currentRTCSession = null;
+    setHangupVisible(false);
+  }
+  stopCallStatusPolling();
+  if (sessionToken) {
+    try {
+      await backendFetch(`${BACKEND_URL}/logout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    } catch (err) {
+      console.warn("[Vobiz] Could not reach the backend to sign out:", err);
+    }
+  }
+  sessionToken = null;
+  if (vobizUA) {
+    // stop() sends an un-REGISTER and closes the socket. The handlers ignore
+    // events from a UA that is no longer current, so the badge stays put.
+    try { vobizUA.stop(); } catch { /* it is being discarded anyway */ }
+    vobizUA = null;
+  }
+  setSipRegistered(false);
+  setDialEnabled(false);
+  setSignOutVisible(false);
+  applySignInMode("account");
+  rememberNumberApps([]);
+  renderNumberOptions([], null);
+  const list = document.getElementById("call-history-list");
+  if (list) list.innerHTML = "";
+  const inboundStatus = document.getElementById("inbound-setup-status");
+  if (inboundStatus) inboundStatus.textContent = "";
+  setLoginStatus("Signed out.");
+  setStatus("Sign in below to bring your phone line online.");
 }
 
 async function vobizSelectNumber() {
@@ -337,10 +435,10 @@ async function vobizSelectNumber() {
 }
 
 /** === Inbound calling setup (one-time, manual — real account changes) ===
- * Creates a Vobiz Application pointed at this backend's /inbound-answer and
- * attaches the currently-selected number to it. Only runs when the button
- * is clicked — never automatically — since this changes real Vobiz account
- * routing, not just local UI state.
+ * The backend finds or creates this integration's Vobiz application (answer
+ * URL: the backend's /answer) and attaches the currently-selected number to
+ * it. Only runs when the button is clicked — never automatically — since this
+ * changes real Vobiz account routing, not just local UI state.
  */
 async function setupInboundCalling() {
   const statusEl = document.getElementById("inbound-setup-status");
@@ -352,16 +450,15 @@ async function setupInboundCalling() {
     const res = await backendFetch(`${BACKEND_URL}/setup-inbound`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // Declaring the platform matters: this panel is browser-only, so the
-      // backend must not also ring the agent's mobile on an inbound call.
-      body: JSON.stringify({ agentId: AGENT_ID, platform: "freshdesk" }),
+      // The session token says which agent and number; the body carries nothing.
+      body: "{}",
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `setup failed (${res.status})`);
     statusEl.textContent = data.previousAppId
-      ? `Inbound calls to ${data.number} now ring this panel (moved off application ${data.previousAppId}).`
+      ? `Inbound calls to ${data.number} now ring this panel (moved off application ${appLabel(data.previousAppId, data.previousAppName)}).`
       : `Inbound calls to ${data.number} now ring this panel.`;
-    numberApps[data.number] = null;
+    numberApps[data.number] = { id: data.appId || null, name: null, thisPanel: true };
     renderInboundHint();
     statusEl.classList.add("is-ok");
   } catch (err) {
@@ -457,7 +554,7 @@ function playRecording(recordingId, playUrl) {
 function statusState(text) {
   if (/^ready/i.test(text)) return { label: "Ready", tone: "ok" };
   if (/^on a call/i.test(text)) return { label: "On a call", tone: "busy" };
-  if (/^call ringing/i.test(text)) return { label: "Ringing", tone: "busy" };
+  if (/^(call )?ringing/i.test(text)) return { label: "Ringing", tone: "busy" };
   if (/^connecting/i.test(text)) return { label: "Connecting", tone: "pending" };
   if (/reconnecting/i.test(text)) return { label: "Reconnecting", tone: "pending" };
   if (/^sign in/i.test(text)) return { label: "Signed out", tone: "pending" };
@@ -535,7 +632,7 @@ async function initVobizSip() {
   setStatus(`Connecting as ${agent.displayName}…`);
 
   const vobizSocket = new JsSIP.WebSocketInterface(REGISTRAR_URL);
-  vobizUA = new JsSIP.UA({
+  const ua = new JsSIP.UA({
     sockets: [vobizSocket],
     uri: `sip:${agent.sipUser}`,
     password: agent.sipPassword,
@@ -561,30 +658,40 @@ async function initVobizSip() {
     // the supported configuration rather than a workaround.
     session_timers: false,
   });
+  vobizUA = ua;
 
-  vobizUA.on("registered", () => {
+  // A UA that was replaced (new sign-in) or stopped (sign-out) still emits
+  // unregistered/disconnected on its way down. Those must not repaint a panel
+  // that has moved on, so every handler first checks it is still current.
+  const current = () => vobizUA === ua;
+
+  ua.on("registered", () => {
+    if (!current()) return;
     setStatus(`Ready — registered as ${agent.displayName}`);
     setSipRegistered(true);
   });
-  vobizUA.on("registrationFailed", e => {
+  ua.on("registrationFailed", e => {
+    if (!current()) return;
     setStatus(`Registration failed: ${(e && e.cause) || "unknown"}`);
     setSipRegistered(false);
   });
   // Without these two, a dropped transport leaves the panel showing "Ready"
   // while the endpoint is uncallable.
-  vobizUA.on("unregistered", () => {
+  ua.on("unregistered", () => {
+    if (!current()) return;
     setStatus("Not registered — reconnecting…");
     setSipRegistered(false);
   });
-  vobizUA.on("disconnected", () => {
+  ua.on("disconnected", () => {
+    if (!current()) return;
     setStatus("Disconnected from the registrar — reconnecting…");
     setSipRegistered(false);
   });
 
   // Vobiz dialling INTO this registered endpoint: an inbound PSTN call that
   // the backend's answer URL bridged here with <Dial><User>.
-  vobizUA.on("newRTCSession", data => {
-    if (data.originator !== "remote") return;
+  ua.on("newRTCSession", data => {
+    if (!current() || data.originator !== "remote") return;
 
     setStatus("Call ringing in…");
     currentRTCSession = data.session;
@@ -632,7 +739,7 @@ async function initVobizSip() {
     }
   });
 
-  vobizUA.start();
+  ua.start();
 
   // Surface a dead microphone path at startup rather than mid-call.
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -684,6 +791,11 @@ function placeCall(number) {
 
   // Vobiz routes a bare E.164 destination; the registrar is the SIP domain.
   const target = `sip:${String(number).replace(/[^\d+]/g, "")}@registrar.vobiz.ai`;
+  // Names this call to the backend, which keys the customer's leg by it, so
+  // /call-status can say whether the customer has picked up yet.
+  const callRef = newCallRef();
+  const headers = [`X-VH-Call-Ref: ${callRef}`];
+  if (selectedCallerId) headers.unshift(`X-VH-Caller-ID: ${selectedCallerId}`);
 
   try {
     const session = vobizUA.call(target, {
@@ -697,18 +809,27 @@ function placeCall(number) {
       sessionTimersExpires: 300,
       // Vobiz passes X-VH- headers to the answer URL, so the backend reads the
       // caller ID off this call itself. It still checks it against the account.
-      extraHeaders: selectedCallerId ? [`X-VH-Caller-ID: ${selectedCallerId}`] : [],
+      extraHeaders: headers,
     });
     currentRTCSession = session;
     attachRemoteAudio(session);
     setHangupVisible(true);
 
     session.on("progress", () => { if (numEl) numEl.textContent = `Ringing ${number}…`; });
+    // Vobiz answers this leg as soon as it is in the conference room, which is
+    // before the customer's phone has even rung. So "confirmed" means "your
+    // leg is up"; the backend says when the customer joins.
     session.on("confirmed", () => {
-      if (numEl) numEl.textContent = `On a call with ${number}`;
-      setStatus("On a call");
+      if (signInMode === "account") {
+        if (numEl) numEl.textContent = `Ringing ${number}…`;
+        setStatus("Ringing — waiting for the customer to answer");
+        pollCallStatus(callRef, number, session);
+      } else {
+        showConnected(number);
+      }
     });
     session.on("failed", e => {
+      stopCallStatusPolling();
       const cause = (e && e.cause) || "unknown";
       if (numEl) numEl.textContent = `Call failed — ${cause}`;
       setStatus("Ready");
@@ -716,6 +837,7 @@ function placeCall(number) {
       setHangupVisible(false);
     });
     session.on("ended", () => {
+      stopCallStatusPolling();
       if (numEl) {
         numEl.textContent = "Call ended";
         setTimeout(() => { numEl.hidden = true; }, 4000);
@@ -737,3 +859,44 @@ function placeCall(number) {
   }
 }
 
+function showConnected(number) {
+  const numEl = document.getElementById("callnum");
+  if (numEl) numEl.textContent = `On a call with ${number}`;
+  setStatus("On a call");
+}
+
+function newCallRef() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function stopCallStatusPolling() {
+  if (callStatusTimer) clearTimeout(callStatusTimer);
+  callStatusTimer = null;
+}
+
+/**
+ * Ask the backend whether the customer has joined, until they have. "ringing"
+ * keeps polling; "connected" shows the call as live. Anything else — a backend
+ * that does not track it (OUTBOUND_MODE=dial), or an error — falls back to
+ * "On a call", which is what JsSIP alone can say.
+ */
+async function pollCallStatus(callRef, number, session) {
+  stopCallStatusPolling();
+  if (currentRTCSession !== session) return;
+  let state = null;
+  try {
+    const res = await backendFetch(`${BACKEND_URL}/call-status/${encodeURIComponent(callRef)}`);
+    const data = await res.json();
+    if (res.ok) state = data.state || null;
+  } catch (err) {
+    console.warn("[Vobiz] Could not read the call status:", err);
+  }
+  if (currentRTCSession !== session) return;
+  if (state === "ringing") {
+    callStatusTimer = setTimeout(() => pollCallStatus(callRef, number, session), CALL_STATUS_POLL_MS);
+    return;
+  }
+  showConnected(number);
+}

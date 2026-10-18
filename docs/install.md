@@ -55,10 +55,13 @@ in the bundled SIP library.
    | Setting | Value |
    | --- | --- |
    | Calling backend URL | Your backend's HTTPS base URL, with no trailing slash, for example `https://calling.example.com` |
-   | Agent identity | A short name with no spaces, slashes or colons, for example `support`. Everyone in this Freshdesk account shares it. See the README's [Limitations](../README.md#limitations). |
    | SIP registrar URL (optional) | Leave blank unless Vobiz support gives you a different URL |
 
 5. Click **Save**.
+
+There is no per-agent setting. The panel reads the Freshdesk agent who is logged
+in and gives each one their own SIP line, so agents sharing one Vobiz account
+never sign each other out.
 
 To change these later, go to **Admin → Apps → Manage Apps → Custom → Vobiz
 Calling → Settings → Configure**. You don't need to reinstall.

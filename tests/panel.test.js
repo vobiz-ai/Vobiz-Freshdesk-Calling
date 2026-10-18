@@ -36,7 +36,7 @@ describe("caller-ID selection", () => {
 
     const call = fetch.mock.calls.find(c => String(c[0]).includes("/select-number"));
     expect(call).toBeTruthy();
-    expect(JSON.parse(call[1].body)).toMatchObject({ agentId: "priya", number: "+910000000002" });
+    expect(JSON.parse(call[1].body)).toMatchObject({ agentId: "fd1001", number: "+910000000002" });
   });
 
   it("reports a rejected selection", async () => {
@@ -83,7 +83,8 @@ describe("inbound setup", () => {
     await flush();
 
     const call = fetch.mock.calls.find(c => String(c[0]).includes("/setup-inbound"));
-    expect(JSON.parse(call[1].body)).toMatchObject({ agentId: "priya" });
+    // The token says who and which number; the ignored `platform` field is gone.
+    expect(JSON.parse(call[1].body)).toEqual({});
     expect(t.text("inbound-setup-status")).toMatch(/\+910000000001/);
   });
 
@@ -151,7 +152,7 @@ describe("call recordings", () => {
     expect(playBtn).toBeTruthy();
     playBtn.click();
 
-    expect(audio.src).toContain("/recording-audio/priya/rec_a");
+    expect(audio.src).toContain("/recording-audio/fd1001/rec_a");
   });
 });
 
@@ -187,6 +188,7 @@ describe("call progress", () => {
     expect(t.text("callnum")).toMatch(/ringing \+910000000001/i);
 
     session.emit("confirmed");
+    await vi.advanceTimersByTimeAsync(0);
     expect(t.text("callnum")).toMatch(/on a call with \+910000000001/i);
 
     session.emit("ended");
@@ -309,7 +311,7 @@ describe("sign-in tabs", () => {
     await flush(16);
 
     const call = fetch.mock.calls.find(c => String(c[0]).includes("/login-sip"));
-    expect(JSON.parse(call[1].body)).toEqual({ agentId: "priya", sipUser: "ravidesk", sipPassword: "typed", callerId: "+910000000005" });
+    expect(JSON.parse(call[1].body)).toEqual({ agentId: "fd1001", displayName: "Priya", sipUser: "ravidesk", sipPassword: "typed", callerId: "+910000000005" });
     expect(t.ua.config.uri).toBe("sip:ravidesk@registrar.vobiz.ai");
     expect(t.text("vobiz-login-status")).toMatch(/SIP direct — calling from \+910000000005/);
     expect(t.el("inbound-step").hidden).toBe(true);
@@ -337,6 +339,8 @@ describe("sign-in tabs", () => {
     t.el("vobiz-login-btn").click();
     await flush(16);
     const first = t.ua;
+    // The Auth Token field is cleared after a sign-in, so it is typed again.
+    t.el("vobiz-auth-token").value = "token";
     t.el("vobiz-login-btn").click();
     await flush(16);
     expect(first.stopped).toBe(true);
@@ -374,7 +378,9 @@ describe("caller ID on the INVITE", () => {
     t.el("dialnumber").value = "+919999988888";
     t.el("dialbtn").click();
     await flush();
-    expect(t.ua.calls.at(-1).options.extraHeaders).toEqual(["X-VH-Caller-ID: +910000000001"]);
+    const headers = t.ua.calls.at(-1).options.extraHeaders;
+    expect(headers[0]).toBe("X-VH-Caller-ID: +910000000001");
+    expect(headers[1]).toMatch(/^X-VH-Call-Ref: [0-9a-f]{24}$/);
 
     t.el("setup-inbound-btn").click();
     await flush();
