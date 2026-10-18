@@ -8,121 +8,119 @@ This is a **custom app**. You install it on your own Freshdesk account — there
 is no Marketplace approval to wait for, and it is usually live within about
 thirty minutes of upload.
 
-> ## Outbound calling works. Inbound does not yet.
->
-> **Outbound is verified end to end** — the panel registers, dials, and carries
-> two-way audio in the browser, with both legs billed on the Vobiz CDR.
->
-> **Inbound (PSTN → browser) is blocked platform-side.** Routing a call *into* a
-> registered WebRTC endpoint with `<Dial><User>` fails: Vobiz builds an
-> unparseable gateway URI and drops its own INVITE. The caller hears ringback and
-> nothing else. This affects other accounts and Vobiz's own SDK, not just this
-> app — see [ISSUES.md](ISSUES.md) for the evidence.
->
-> Three client settings are **required** and none of them are documented by
-> Vobiz. Without them calls fail with errors that point nowhere near the cause:
->
-> | Setting | Without it |
-> |---|---|
-> | `session_timers: false` | `422 Session Interval Too Small` → "SIP Failure Code", **no CDR at all** |
-> | `pcConfig.iceServers` (STUN) | host-only candidates → "Incompatible SDP", cancelled in ~220 ms |
-> | space-free `user_agent` | harmless here, but Vobiz interpolates it unescaped into a URI |
->
-> All three are what Vobiz's own `vobiz-webrtc-sdk` sets. They are the supported
-> configuration, not workarounds.
+The repository has two parts, and you run both:
 
-**The browser is the A leg.** It sends the INVITE itself; the backend only
-answers Vobiz's question about what to do with the call. The reverse design —
-backend originates to the customer, then bridges the browser in with
-`<Dial><User>` — is what this repository used to do, and it is the path that is
-currently broken.
+| Part | Where | What it does |
+| --- | --- | --- |
+| **The panel** | `app/`, `config/`, `manifest.json` | The Freshdesk app. A SIP softphone in the CTI sidebar |
+| **The calling backend** | `backend/` | A small Node service you host. Holds your Vobiz Auth Token, answers Vobiz's webhooks, signs recording links |
 
 ```
   agent clicks a number
           │  cti.triggerDialer
           ▼
    ┌─────────────┐   SIP INVITE over WebSocket    ┌──────────────┐
-   │  this app   │ ─────────────────────────────▶ │    Vobiz     │
+   │  the panel  │ ─────────────────────────────▶ │    Vobiz     │
    │ (the A leg) │ ◀───────── RTP audio ────────▶ │              │
-   └─────────────┘                                └──────┬───────┘
-                                                         │ answer URL
-                                                         ▼
-                                              ┌────────────────────┐
-                                              │  calling backend   │
-                                              │  <Dial><Number>    │──▶ PSTN
-                                              └────────────────────┘
+   └──────┬──────┘                                └──────┬───────┘
+          │ HTTPS (sign-in, recordings)                  │ answer URL
+          ▼                                              ▼
+   ┌──────────────────────────────────────────────────────────┐
+   │                calling backend (backend/)                │──▶ PSTN
+   └──────────────────────────────────────────────────────────┘
 ```
+
+**The browser is the A leg.** The panel sends the INVITE itself; Vobiz then asks
+the backend's `/answer` what to do with the call, and the backend reaches the
+customer. [docs/architecture.md](docs/architecture.md) explains both directions.
 
 ## What you need first
 
-**A calling backend.** This app holds no Vobiz credentials and cannot place a
-call by itself. It talks to a small service you run, which holds your Vobiz Auth
-Token and drives the Vobiz REST API.
-
-That service is **not** in this repository. Its complete contract — every
-endpoint, request and response shape, and the security requirements — is in
-**[docs/backend-contract.md](docs/backend-contract.md)**. Read it before you
-start; the obvious implementation of the recording endpoint is unsafe, and the
-document explains why.
-
-You also need:
-
 - A Freshdesk account on **Growth, Pro, or Enterprise** with admin access.
-- A [Vobiz account](https://console.vobiz.ai) with an Auth ID, Auth Token, and at
-  least one phone number.
+- A [Vobiz account](https://console.vobiz.ai) with an Auth ID, Auth Token, at
+  least one phone number, and a **SIP endpoint** for each agent.
+- Somewhere to run the backend on **public HTTPS** — a server, or a tunnel for
+  testing. Vobiz must be able to reach it.
+- Node **20+** for the backend, and Node **24.11.1** with FDK 10.1.9 to pack the
+  app.
 
 > **Freshcaller cannot be enabled at the same time as a CTI app**, and Freshdesk
 > allows only one CTI app to be active at a time. Installing this replaces
 > whatever telephony your account uses today.
 
-## Install
+## 1. Run the calling backend
 
-See **[docs/install.md](docs/install.md)** for the full walkthrough with the
-exact menu paths. In short:
+```bash
+git clone https://github.com/vobiz-ai/Vobiz-Freshdesk-Calling.git
+cd Vobiz-Freshdesk-Calling
+cp backend/.env.example backend/.env     # then fill it in
+npm run backend                          # http://127.0.0.1:8093
+```
 
-1. Pack the app: `npm run pack` — the result is in `dist/`.
-2. In Freshdesk, go to the Developer Portal and create a **Custom App**, then
-   upload the packed zip.
-3. Install it on your account and fill in the two required settings:
-   - **Calling backend URL** — the HTTPS base URL of your backend.
-   - **Agent identity** — which identity this installation registers as. Every
-     agent needs a different value.
-4. Open any agent page and click the Vobiz icon at the bottom left.
+`backend/.env.example` documents every variable. The required ones:
 
-## Using it
+| Variable | Value |
+| --- | --- |
+| `VOBIZ_AUTH_ID`, `VOBIZ_AUTH_TOKEN` | Your account's API credentials |
+| `VOBIZ_FROM_NUMBER` | A number the account owns, in E.164 — the default caller ID |
+| `VOBIZ_SIP_USER`, `VOBIZ_SIP_PASSWORD` | The agent's SIP endpoint. Use the username shown in the console after creation |
+| `PUBLIC_BASE` | The public `https://` URL Vobiz reaches the backend on, no trailing slash |
+| `SIGNING_SECRET` | A long random value (`openssl rand -hex 32`) that signs recording links |
 
-**Log in** with your Vobiz Auth ID and Auth Token, then pick the number to call
-from. These are entered by the agent at runtime and are not stored by the app.
+For more than one agent, give each their own endpoint in a JSON file — see
+`backend/agents.example.json` and `AGENTS_FILE`.
 
-**Make a call** by typing a number and clicking **Call**, or by clicking any
-phone number in Freshdesk — the panel opens and dials automatically.
+Put the backend behind HTTPS (a reverse proxy, or a tunnel for testing), then
+point Vobiz at it:
 
-Audio runs through the browser, so the first call prompts for microphone
-permission. The person you call hears a few seconds of ringback after answering
-while your browser is bridged in; this is expected, and
-[docs/backend-contract.md](docs/backend-contract.md#post-start-call) explains
-why.
+1. In the Vobiz console, create an **Application** whose answer URL is
+   `PUBLIC_BASE/answer` (method `POST`).
+2. Attach the agent's **SIP endpoint** to that application. This is what makes
+   outbound work — the panel's INVITE is answered by the endpoint's application.
+3. Attach the **phone number** to the same application for inbound.
 
-**Receive calls** by clicking **Enable inbound calls to this panel** once. Keep
-the Freshdesk tab open.
+The panel's **Enable inbound calls** button does steps 1–3 for you once the
+agent is signed in.
 
-**Play recordings** from the Call Recordings section.
-
-## Run it locally
-
-**You do not need a Vobiz account to develop the panel.** This repository ships
-a mock backend that implements the whole contract with fake data.
-
-The Freshworks CLI is pinned to a Node version, and there is a separate CLI
-build per Node major. Install the pair this app declares in `manifest.json`:
+## 2. Pack and install the app
 
 ```bash
 nvm install 24.11.1 && nvm use 24.11.1
 npm install https://cdn.freshdev.io/fdk/latest-v24.tgz -g
-fdk version     # 10.1.9
+npm install
+npm run pack            # → dist/vobiz-freshdesk-calling.zip
 ```
 
-Then:
+Then follow **[docs/install.md](docs/install.md)**: create a Custom App in the
+Freshdesk Developer Portal, upload the zip, install it, and set:
+
+- **Calling backend URL** — the backend's `https://` URL.
+- **Agent identity** — which agent this installation is. Every agent needs a
+  different value.
+
+> **Use `npm run pack`, not a bare `fdk pack`.** FDK lints every `.js` file under
+> `app/`, vendored dependencies included, and JsSIP's `var` declarations abort
+> the pack. `tools/pack.sh` packs a copy with JsSIP inlined into `index.html`,
+> which FDK does not lint. The source tree is never modified.
+
+## Using it
+
+1. Open any agent page and click the Vobiz icon at the bottom left.
+2. **Sign in** with the Vobiz Auth ID and Auth Token. The backend checks them
+   against the account it serves and returns a session; the token is not stored
+   by the panel. The badge goes from *Signed out* to *Ready* once the panel has
+   registered.
+3. **Pick the number** to call from.
+4. **Call** by typing a number, or click any phone number in Freshdesk. The
+   first call asks for microphone permission.
+5. **Receive calls** by clicking **Enable inbound calls** once. Keep the
+   Freshdesk tab open — the panel answers incoming calls automatically.
+6. **Play recordings** from the Call Recordings list (set `RECORD_CALLS=1` on the
+   backend to record).
+
+## Run it locally
+
+You can develop the panel with no Vobiz account, against the mock backend:
 
 ```bash
 npm install
@@ -131,86 +129,50 @@ npm run dev              # terminal 2 — http://localhost:10001
 ```
 
 `npm run dev` is `fdk run --skip-coverage --skip-validation lint`, and both flags
-are load-bearing:
-
-- **`--skip-validation lint`** — FDK lints every `.js` file under `app/`,
-  vendored dependencies included. JsSIP uses `var` 901 times, which is 989 lint
-  errors, and a bare `fdk run` refuses to start the server because of them.
-- **`--skip-coverage`** — FDK instruments app JS for simulation coverage.
-  Instrumenting the 281 KB minified JsSIP bundle hangs the browser tab with
-  "Page Unresponsive".
+are load-bearing: without the first, FDK instruments the 281 KB JsSIP bundle and
+the tab hangs; without the second, JsSIP's lint errors stop the server starting.
 
 On the **first** `fdk run`, FDK asks which account to simulate at
-<http://localhost:10001/system_settings> before it will let you set anything
-else. Both fields come from your Freshdesk URL — **Organization Domain** without
-the scheme (`yourcompany.freshdesk.com`), **account URL** with it
-(`https://yourcompany.freshdesk.com`). Product type is `DEFAULT` unless you are
-on Freshdesk Omni.
-
-Then set the app's settings at <http://localhost:10001/custom_configs>:
+<http://localhost:10001/system_settings>: **Organization Domain** without the
+scheme (`yourcompany.freshdesk.com`), **account URL** with it. Then set the app's
+settings at <http://localhost:10001/custom_configs>:
 
 | Setting | Value |
 | --- | --- |
-| Calling backend URL | `http://localhost:8092`, or an `https://` URL |
+| Calling backend URL | `http://localhost:8092` (mock) or `http://localhost:8093` (real backend) |
 | Agent identity | anything, e.g. `priya` |
 | SIP registrar URL | leave blank |
 
-> **`http://localhost:8092` works.** Loopback is exempt from the HTTPS check —
-> browsers already treat localhost as a secure context. Every other host must be
-> `https://`, because a bare hostname resolves against the Freshdesk app origin
-> and 404s silently, which reads as "the backend is down" rather than a typo.
-
-> **Testing real calls needs a public HTTPS backend**, not the mock: Vobiz has to
-> reach your answer URL from the internet. A tunnel works, but on ngrok's free
-> tier the browser interstitial breaks XHR unless every request carries
-> `ngrok-skip-browser-warning` — this app sends it, and your backend must list it
-> in `Access-Control-Allow-Headers` or the CORS preflight fails and the real
-> request is never sent.
-
-Any Auth ID and Auth Token are accepted; use `fail` as the Auth ID to see the
-error path. See [mock-backend/README.md](mock-backend/README.md) for the rest,
-including how to point it at a real Vobiz SIP endpoint to test actual audio.
-
 Open a Freshdesk page with `?dev=true` appended to load the panel from your
-machine. Without that flag Freshdesk looks for a published version and the icon
-never appears.
+machine.
+
+With the mock, any Auth ID and Auth Token are accepted (`fail` as the Auth ID
+shows the error path) and no call is placed. To place real calls, run the real
+backend instead with `PUBLIC_BASE` set to a public HTTPS tunnel to port 8093.
+
+> **On ngrok's free tier**, the browser interstitial breaks requests unless they
+> carry `ngrok-skip-browser-warning`. The panel sends it and the backend allows
+> it in CORS.
 
 ## Tests
 
 ```bash
-npm test        # 54 tests, with coverage
-fdk validate    # platform and lint rules — 0 platform errors
+npm test        # panel and backend, with coverage
+fdk validate    # Freshworks platform rules
 npm run pack    # build dist/vobiz-freshdesk-calling.zip
 ```
 
-Freshworks requires 80% coverage on every metric for a Marketplace submission,
-and `fdk pack` enforces it.
+The panel tests load the real `app/scripts/app.js` and the real markup from
+`app/index.html` into jsdom with the Freshworks SDK, JsSIP and `fetch` faked. The
+backend tests start the real `backend/server.js` and drive it over HTTP, with
+only the Vobiz API faked — including the security checks (SIP password, CORS,
+recording links, path traversal, webhook signatures).
 
-> **Use `npm run pack`, not a bare `fdk pack`.** FDK lints every `.js` file under
-> `app/`, vendored dependencies included, and JsSIP's 901 `var` declarations are
-> 989 lint errors that abort the pack. `.fdkignore`, `.eslintignore` and moving
-> the file elsewhere are all ignored by FDK.
->
-> `tools/pack.sh` works around it without touching the library's semantics: it
-> builds a *copy* of the app with JsSIP inlined into `index.html` — which FDK
-> does not lint — and packs that. The source tree is never modified.
+`fdk validate` reports 0 platform errors. Its lint count is JsSIP's, from the
+vendored bundle, and does not reach the packed app.
 
-The tests load the real `app/scripts/app.js` and the real markup from
-`app/index.html` into jsdom with the Freshworks SDK, JsSIP, and `fetch` faked,
-so they exercise the code that ships rather than a copy of it.
-
-> `fdk pack` additionally wants *local simulation* coverage, which is only
-> produced by driving the app inside a real Freshdesk account via `?dev=true`.
-> That is a Marketplace gate and does not apply to custom apps, so
-> `tools/pack.sh` passes `--skip-coverage`. Unit tests still run and must pass
-> before the zip is written. Drop that flag for a Marketplace submission.
-
-The app itself is three files — `app/index.html`, `app/scripts/app.js`, and
-`app/styles/style.css`. There is no framework.
-
-The one build artefact is `app/lib/jssip.min.js`, vendored because **JsSIP has
-no browser build on any CDN** — the npm package ships CommonJS only, and the URL
-this repository used to load it from had never worked. Rebuild it with:
+The vendored `app/lib/jssip.min.js` exists because **JsSIP has no browser build
+on any CDN**. Rebuild it with:
 
 ```bash
 npm i jssip@3.10.1
@@ -224,46 +186,39 @@ npx esbuild entry.js --bundle --minify --format=iife \
 | Path | What it is |
 | --- | --- |
 | `manifest.json`, `config/` | The Freshworks app manifest and its installation settings |
-| `app/` | The panel itself — markup, script, styles, icon |
+| `app/` | The panel — markup, script, styles, icon, vendored JsSIP |
+| `backend/` | The calling backend you run |
+| `mock-backend/` | A fake backend for developing the panel without a Vobiz account |
 | `tools/` | `pack.sh` and `inline-jssip.mjs` — the packaging workaround |
-| `mock-backend/` | A zero-dependency fake backend for local development |
-| `app/lib/jssip.min.js` | Vendored JsSIP browser bundle — see [Tests](#tests) for why |
-| `tests/` | 54 tests against the real source, run with Vitest in jsdom |
-| `ISSUES.md` | Open problems and everything already ruled out. **Read this first** |
-| `docs/backend-contract.md` | Every endpoint the backend must implement, and its security requirements |
+| `tests/` | Panel tests (jsdom) and backend tests (real HTTP) |
+| `docs/backend-contract.md` | Every route the backend serves, and why |
+| `docs/architecture.md` | How calls flow in each direction |
 | `docs/install.md` | Installing as a Freshdesk custom app, with troubleshooting |
-| `docs/architecture.md` | How a Freshdesk CTI app works, and what this one does not do yet |
+| `ISSUES.md` | Known limitations |
 
 ## Known limitations
 
-Honest list, so nobody is surprised. Full detail in **[ISSUES.md](ISSUES.md)**.
-
-- **Inbound calls (PSTN → browser) do not connect.** Vobiz drops its own INVITE
-  when routing into a registered WebRTC endpoint. Platform-side, not fixable
-  here. Outbound is unaffected.
-  [ISSUES.md #1](ISSUES.md#issue-1--inbound-routing-into-a-webrtc-endpoint-is-blocked-platform-side).
-- **Inbound calls auto-answer**, with no ring, no caller ID and no
-  Accept/Decline.
-  [ISSUES.md #5](ISSUES.md#issue-5--inbound-calls-auto-answer-with-no-popup).
+- **Inbound calls auto-answer**, with no ring, caller ID or Accept/Decline.
 - **The panel is a softphone, not a full CTI integration.** It does not create
-  tickets, log calls as ticket notes, pop the contact record on an inbound call,
-  or attach recordings to a ticket. Click-to-call works; the rest is on the
-  roadmap in [CHANGELOG.md](CHANGELOG.md).
-- **Browser calling only.** There is no option to route calls to an agent's
-  mobile or desk phone.
-- **No hold, mute, transfer, or conference.**
-- **One agent identity per installation**, set by an admin.
+  tickets, log calls, pop the contact on an inbound call, or attach recordings.
+  Click-to-call works.
+- **No hold, mute, transfer, or conference controls.**
+- **Sessions live in the backend's memory.** Restarting it signs everyone out,
+  and it runs as a single instance.
+
+Detail in [ISSUES.md](ISSUES.md).
 
 ## Security
 
-The app stores nothing — no credentials in `localStorage`, no cookies. Your
-Vobiz Auth Token goes to your backend and is held there.
+The panel stores nothing — no credentials in `localStorage`, no cookies. The
+Auth Token is sent once, to your backend, at sign-in.
 
-The security of this integration is therefore almost entirely the security of
-your backend. [docs/backend-contract.md](docs/backend-contract.md#security-requirements)
-has the checklist. Please read it.
-
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
+The backend issues a session token at sign-in and requires it for the SIP
+identity, caller-ID changes, inbound setup and recordings; it answers CORS only
+for Freshdesk and localhost origins; it serves recordings only through signed,
+expiring links; and it checks Vobiz's webhook signatures. See
+[docs/backend-contract.md](docs/backend-contract.md#security) and
+[SECURITY.md](SECURITY.md).
 
 ## Maintenance and licence
 

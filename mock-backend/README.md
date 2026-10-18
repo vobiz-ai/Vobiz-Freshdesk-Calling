@@ -1,7 +1,8 @@
 # Mock calling backend
 
 A zero-dependency stand-in for the calling backend, so the Freshdesk panel can
-be developed and tested without a Vobiz account or the production service.
+be developed without a Vobiz account. It places no calls. To place real calls,
+run the real backend in [`../backend/`](../backend/) instead.
 
 It implements every endpoint in [../docs/backend-contract.md](../docs/backend-contract.md).
 
@@ -16,7 +17,8 @@ Set `http://localhost:8092` as the app's **Calling backend URL** at
 
 | Behaviour | Detail |
 | --- | --- |
-| Credentials | Any Auth ID and Auth Token are accepted |
+| Credentials | Any Auth ID and Auth Token are accepted, and a session token is issued |
+| Session | `/agent`, `/session`, `/recordings` need the token, as on the real backend |
 | Forced failure | Use `fail` as the Auth ID to exercise the login error path |
 | Numbers | Three fake DIDs |
 | Calls | A call is queued for 3s, live until 20s, then ends |
@@ -33,13 +35,14 @@ Set `http://localhost:8092` as the app's **Calling backend URL** at
 | `VOBIZ_SIP_USER` | — | Real SIP user, to test actual registration |
 | `VOBIZ_SIP_PASSWORD` | — | Real SIP password |
 
-By default the SIP credentials are placeholders, so registration fails and the
-Call button stays disabled. **That is the panel behaving correctly** — it
+By default the SIP credentials (served after sign-in) are placeholders, so
+registration fails and the Call button stays disabled. **That is the panel behaving correctly** — it
 deliberately refuses to dial without a registered endpoint, because otherwise
 the customer answers and hears silence.
 
-To exercise the full audio path, create a SIP endpoint in the
-[Vobiz Console](https://console.vobiz.ai) and export its credentials:
+To test SIP registration against a real endpoint, export its credentials. Calls
+will still not connect — nothing here answers Vobiz's webhooks; that is
+`npm run backend`.
 
 ```bash
 export VOBIZ_SIP_USER='myendpoint@registrar.vobiz.ai'
@@ -49,6 +52,6 @@ npm run mock-backend
 
 ## Do not deploy this
 
-It has no authentication, accepts any credentials, and sets permissive CORS. It
-exists to make the panel developable. A real backend must meet the
-[security requirements](../docs/backend-contract.md#security-requirements).
+It accepts any credentials and listens on loopback only. It exists to make the
+panel developable. The real backend is in [`../backend/`](../backend/); its
+security model is in [the contract](../docs/backend-contract.md#security).

@@ -36,25 +36,56 @@ write tickets — see [what is missing](#what-is-missing).
 ## An outbound call, end to end
 
 1. The agent clicks **Call**, or clicks a number in Freshdesk.
-2. The app POSTs `/start-call` to the calling backend.
-3. The backend calls the Vobiz REST API and **dials the customer first**.
-4. When the customer answers, Vobiz fetches the backend's `/answer` webhook,
-   which returns `<Dial><User>sip:…</User></Dial>`.
-5. Vobiz dials *into* this browser's registered SIP endpoint.
-6. The app auto-answers that leg and binds the audio.
+2. The panel sends a SIP INVITE for that number from the browser — **the
+   browser is the A leg**.
+3. Vobiz fetches the answer URL of the application the agent's SIP endpoint is
+   bound to: the backend's `/answer`.
+4. The backend sees `From: sip:…`, puts the agent's leg in a conference room of
+   its own, and dials the customer over the REST API with the agent's chosen
+   caller ID.
+5. The customer answers; Vobiz fetches `/outbound-join`, and they join the room.
+6. Either side hanging up ends the call for both. If the customer never answers,
+   the backend hangs up the agent's leg.
 
-The order matters and cannot be reversed: the Vobiz REST API cannot originate a
-call to a registered WebRTC endpoint — it returns `Endpoint Not Registered`.
-This is also why the customer hears a few seconds of ringback after answering,
-while the agent's browser is being bridged in.
+`OUTBOUND_MODE=dial` replaces steps 4–5 with a single `<Dial><Number>`. It is
+simpler, but a `<Dial>` bridged from a WebRTC leg was measured losing the phone
+side's audio on three of five calls, which is why the conference is the default.
+
+The reverse design — the backend dials the customer first, then rings the
+browser in — is not used: the REST API cannot originate a call to a WebRTC
+endpoint, and the customer would hear ringback while the agent was found.
 
 ## An inbound call
 
-The agent clicks **Enable inbound calls** once. The backend creates a Vobiz
-application pointing at its own `/inbound-answer` and attaches the agent's
-selected number to it. Real calls to that number then hit `/inbound-answer`,
-which dials `sip:…` — landing on the same auto-answer path as the outbound
-bridge leg.
+The agent clicks **Enable inbound calls** once. The backend creates (or reuses)
+a Vobiz application pointing at its `/answer`, attaches the agent's selected
+number to it, and binds the agent's endpoint to it. A call to that number then
+reaches `/answer` with a plain number in `From`, and the backend answers:
+
+```xml
+<Dial callerId="<the dialled number>" …><User>sip:<agent endpoint></User></Dial>
+```
+
+Vobiz rings the registered browser, and the panel answers automatically.
+
+Two things this depends on, both handled:
+
+- **`callerId` is the dialled number.** Left unset, Vobiz uses the caller's own
+  number, which the account does not own, and never rings the browser.
+- **The panel's SIP User-Agent contains no space.** Vobiz copies the User-Agent
+  from the registration into the address it routes `<Dial><User>` through, and
+  JsSIP's default, `JsSIP 3.10.1`, breaks it: the caller hears ringback and the
+  browser never rings. The panel sends `VobizFreshdeskCalling/1.0.0`.
+
+## Settings the SIP stack needs
+
+| Setting | Without it |
+| --- | --- |
+| `session_timers: false` | `422 Session Interval Too Small`, surfaced by JsSIP as "SIP Failure Code", and no CDR |
+| `pcConfig.iceServers` (STUN), on calls and on answers | host-only candidates; the call is cancelled as "Incompatible SDP", or connects with no audio |
+| a `user_agent` with no space | inbound `<Dial><User>` never reaches the browser |
+
+These match what Vobiz's own WebRTC SDK sets, and tests pin all three.
 
 ## Binding inbound audio
 

@@ -358,3 +358,122 @@ describe("leaving the page", () => {
     expect(t.ua.stopped).toBe(true);
   });
 });
+
+// These three settings are what make a call connect on Vobiz at all, and each
+// one fails with an error that points nowhere near the cause. They are pinned
+// here so a refactor cannot quietly drop one.
+describe("settings Vobiz requires of the SIP stack", () => {
+  async function registered() {
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
+    });
+    t.ua.emit("registered");
+    return t;
+  }
+
+  it("sends a User-Agent with no space in it", async () => {
+    // Vobiz interpolates the registration's User-Agent unescaped into the URI
+    // it routes <Dial><User> through. JsSIP's default, "JsSIP 3.10.1", has a
+    // space, and the platform then drops its own INVITE to this browser.
+    const t = await registered();
+    expect(t.ua.config.user_agent).toBeTruthy();
+    expect(t.ua.config.user_agent).not.toMatch(/\s/);
+  });
+
+  it("turns session timers off", async () => {
+    // Otherwise: 422 Session Interval Too Small, surfaced as "SIP Failure Code",
+    // and no CDR at all.
+    const t = await registered();
+    expect(t.ua.config.session_timers).toBe(false);
+  });
+
+  it("offers STUN on an outbound call", async () => {
+    const t = await registered();
+    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
+    await flush();
+    const { options } = t.ua.calls.at(-1);
+    expect(options.pcConfig.iceServers[0].urls[0]).toMatch(/^stun:/);
+  });
+
+  it("offers STUN when answering an inbound leg", async () => {
+    const t = await registered();
+    const session = new FakeSession();
+    let answeredWith = null;
+    session.answer = opts => { answeredWith = opts; };
+    t.ua.emit("newRTCSession", { originator: "remote", session });
+    expect(answeredWith.pcConfig.iceServers[0].urls[0]).toMatch(/^stun:/);
+  });
+});
+
+// The backend serves the SIP identity only to a signed-in panel, so a fresh
+// open sees 401 from /agent and comes online after sign-in.
+describe("the session token", () => {
+  const SIGNED_OUT = { ok: false, status: 401, body: { error: "Sign in first" } };
+
+  function signedOutThenIn() {
+    let signedIn = false;
+    return routes({
+      "/agent/": () => (signedIn ? AGENT_OK : SIGNED_OUT),
+      "/session/": { body: { loggedIn: false } },
+      "/login": () => { signedIn = true; return { body: { token: "tok123", numbers: ["+911140848108"], selected: "+911140848108" } }; },
+      "/recordings/": { body: { objects: [] } },
+    });
+  }
+
+  async function signIn(t) {
+    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-token").value = "token";
+    t.el("vobiz-login-btn").click();
+    await flush(16);
+  }
+
+  it("says to sign in, rather than reporting a broken identity, before sign-in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: signedOutThenIn() });
+    expect(t.text("status-message")).toMatch(/sign in below/i);
+    expect(t.text("status")).toBe("Signed out");
+    expect(t.JsSIP.UA).not.toHaveBeenCalled();
+  });
+
+  it("registers once signed in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: signedOutThenIn() });
+    await signIn(t);
+    expect(t.JsSIP.UA).toHaveBeenCalledTimes(1);
+    expect(t.ua.config.password).toBe("s3cret");
+  });
+
+  it("sends the token as a bearer header on every later request", async () => {
+    const fetch = signedOutThenIn();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await signIn(t);
+    const after = fetch.mock.calls.filter(c => /\/agent\/|\/recordings\//.test(String(c[0])));
+    expect(after.length).toBeGreaterThan(0);
+    const last = after.at(-1);
+    expect(last[1].headers.Authorization).toBe("Bearer tok123");
+  });
+
+  it("keeps the token out of browser storage", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const t = await boot({ iparams: SETTINGS, fetch: signedOutThenIn() });
+    await signIn(t);
+    expect(setItem).not.toHaveBeenCalled();
+    expect(document.cookie).toBe("");
+    setItem.mockRestore();
+  });
+
+  it("plays the signed link the backend returned, without the token in it", async () => {
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({
+        "/agent/": AGENT_OK,
+        "/session/": { body: { loggedIn: true, numbers: ["+911140848108"], from: "+911140848108", authId: "MA_TEST" } },
+        "/recordings/": { body: { objects: [{ recording_id: "rec_a", playUrl: "/recording-audio/priya/rec_a?exp=9&sig=abc" }] } },
+      }),
+    });
+    await flush();
+    const audio = t.el("vobiz-playback-audio");
+    audio.play = vi.fn(() => Promise.resolve());
+    t.el("call-history-list").querySelector("button").click();
+    expect(audio.src).toBe("https://backend.example.com/recording-audio/priya/rec_a?exp=9&sig=abc");
+  });
+});

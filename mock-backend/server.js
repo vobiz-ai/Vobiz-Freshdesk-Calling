@@ -9,8 +9,11 @@
  *   node mock-backend/server.js
  *   → http://localhost:8092
  *
- * This is a DEVELOPMENT TOOL. It has no authentication, accepts any
- * credentials, and is deliberately permissive about CORS. Never deploy it.
+ * This is a DEVELOPMENT TOOL. It accepts any credentials and places no calls.
+ * It mirrors the real backend's shape — /login issues a bearer token, and the
+ * SIP identity and recordings are only served with it — so the panel is
+ * developed against the same flow it meets in production. Never deploy it;
+ * backend/ is the real one.
  *
  * ---------------------------------------------------------------------------
  * Optional: real SIP registration
@@ -40,6 +43,14 @@ const NUMBERS = ["+911140848108", "+911140848109", "+911140848110"];
 /** agentId -> session */
 const sessions = new Map();
 
+/** bearer token -> agentId */
+const tokens = new Map();
+
+function agentFor(req) {
+  const h = String(req.headers.authorization || "");
+  return h.startsWith("Bearer ") ? tokens.get(h.slice(7)) || null : null;
+}
+
 /** callUuid -> { startedAt, to } */
 const calls = new Map();
 
@@ -61,13 +72,22 @@ function log(method, path, status, note) {
   console.log(`  ${mark} ${stamp}  ${method.padEnd(4)} ${path.padEnd(46)} ${status}${note ? "  " + note : ""}`);
 }
 
+let currentOrigin = null;
+
 function send(res, status, body, headers = {}) {
   const payload = typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+  // Only the FDK dev server and other loopback pages, never "*".
+  const cors = currentOrigin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(currentOrigin)
+    ? {
+      "Access-Control-Allow-Origin": currentOrigin,
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, ngrok-skip-browser-warning",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      Vary: "Origin",
+    }
+    : { Vary: "Origin" };
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    ...cors,
     ...headers,
   });
   res.end(payload);
@@ -124,6 +144,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = url.pathname;
   const method = req.method;
+  currentOrigin = req.headers.origin || null;
 
   if (method === "OPTIONS") {
     send(res, 204, "");
@@ -134,6 +155,10 @@ const server = http.createServer(async (req, res) => {
   let m = path.match(/^\/agent\/([^/]+)$/);
   if (m && method === "GET") {
     const agentId = decodeURIComponent(m[1]);
+    if (agentFor(req) !== agentId) {
+      send(res, 401, { error: "Sign in first" });
+      return log(method, path, 401, "no session");
+    }
     const usingReal = Boolean(process.env.VOBIZ_SIP_USER && process.env.VOBIZ_SIP_PASSWORD);
     send(res, 200, {
       displayName: `${agentId} (mock)`,
@@ -147,7 +172,7 @@ const server = http.createServer(async (req, res) => {
   m = path.match(/^\/session\/([^/]+)$/);
   if (m && method === "GET") {
     const agentId = decodeURIComponent(m[1]);
-    const s = sessions.get(agentId);
+    const s = agentFor(req) === agentId ? sessions.get(agentId) : null;
     send(res, 200, s
       ? { loggedIn: true, numbers: NUMBERS, from: s.from, authId: s.authId }
       : { loggedIn: false });
@@ -169,14 +194,16 @@ const server = http.createServer(async (req, res) => {
       return log(method, path, 401, "forced failure");
     }
     sessions.set(agentId, { authId, from: NUMBERS[0] });
-    send(res, 200, { numbers: NUMBERS, selected: NUMBERS[0] });
+    const token = require("node:crypto").randomBytes(16).toString("hex");
+    tokens.set(token, agentId);
+    send(res, 200, { token, numbers: NUMBERS, selected: NUMBERS[0] });
     return log(method, path, 200, `agent=${agentId}`);
   }
 
   // POST /select-number
   if (path === "/select-number" && method === "POST") {
-    const { agentId, number } = await readJson(req).catch(() => ({}));
-    const s = sessions.get(agentId);
+    const { number } = await readJson(req).catch(() => ({}));
+    const s = sessions.get(agentFor(req));
     if (!s) {
       send(res, 401, { error: "Not logged in" });
       return log(method, path, 401);
@@ -188,8 +215,8 @@ const server = http.createServer(async (req, res) => {
 
   // POST /setup-inbound
   if (path === "/setup-inbound" && method === "POST") {
-    const { agentId } = await readJson(req).catch(() => ({}));
-    const s = sessions.get(agentId);
+    await readJson(req).catch(() => ({}));
+    const s = sessions.get(agentFor(req));
     if (!s) {
       send(res, 401, { error: "Log in before enabling inbound calls" });
       return log(method, path, 401);
@@ -198,22 +225,10 @@ const server = http.createServer(async (req, res) => {
     return log(method, path, 200, s.from);
   }
 
-  // POST /start-call
+  // POST /start-call — retired. The panel places outbound calls over SIP.
   if (path === "/start-call" && method === "POST") {
-    const { to, agentId } = await readJson(req).catch(() => ({}));
-    const s = sessions.get(agentId);
-    if (!s) {
-      send(res, 401, { error: "Log in before placing a call" });
-      return log(method, path, 401, "not logged in");
-    }
-    if (!to) {
-      send(res, 400, { error: "A number to call is required" });
-      return log(method, path, 400);
-    }
-    const uuid = `mock-${Math.random().toString(16).slice(2, 10)}`;
-    calls.set(uuid, { startedAt: Date.now(), to });
-    send(res, 200, { request_uuid: uuid });
-    return log(method, path, 200, `${to} → ${uuid}`);
+    send(res, 410, { error: "Outbound calls are placed by the panel over SIP" });
+    return log(method, path, 410);
   }
 
   // GET /call-status/:callUuid
@@ -232,12 +247,17 @@ const server = http.createServer(async (req, res) => {
   m = path.match(/^\/recordings\/([^/]+)$/);
   if (m && method === "GET") {
     const agentId = decodeURIComponent(m[1]);
-    if (!sessions.has(agentId)) {
+    if (agentFor(req) !== agentId) {
       send(res, 401, { error: "Log in to see recordings" });
       return log(method, path, 401, "not logged in");
     }
     const limit = Number(url.searchParams.get("limit") || 15);
-    send(res, 200, { objects: RECORDINGS.slice(0, limit) });
+    send(res, 200, {
+      objects: RECORDINGS.slice(0, limit).map(r => ({
+        ...r,
+        playUrl: `/recording-audio/${encodeURIComponent(agentId)}/${r.recording_id}?exp=0&sig=mock`,
+      })),
+    });
     return log(method, path, 200, `${Math.min(limit, RECORDINGS.length)} items`);
   }
 
@@ -248,11 +268,20 @@ const server = http.createServer(async (req, res) => {
     return log(method, path, 200, `${WAV.length} bytes`);
   }
 
-  // Vobiz-facing webhooks. Included so the shape is visible; nothing calls
-  // these locally because no real call is ever placed.
+  // Vobiz-facing webhook. Included so the shape is visible; nothing calls it
+  // locally because no real call is ever placed. backend/server.js has the
+  // real one, including the conference bridge it uses for outbound.
+  //   From = sip:…  → the browser dialled out  → <Dial><Number>
+  //   From = number → a PSTN caller            → <Dial><User>, callerId = the DID
   if (path === "/answer" || path === "/inbound-answer") {
+    const params = Object.fromEntries(url.searchParams);
     const sipUser = process.env.VOBIZ_SIP_USER || "agent@registrar.vobiz.ai";
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Dial><User>sip:${sipUser}</User></Dial></Response>`;
+    const from = String(params.From || "");
+    const to = String(params.To || "").replace(/[^\d]/g, "");
+    const inner = from.startsWith("sip:")
+      ? `<Dial callerId="${NUMBERS[0]}"><Number>${to}</Number></Dial>`
+      : `<Dial callerId="+${to || NUMBERS[0].slice(1)}"><User>sip:${sipUser}</User></Dial>`;
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>${inner}</Response>`;
     send(res, 200, xml, { "Content-Type": "text/xml" });
     return log(method, path, 200, "XML");
   }

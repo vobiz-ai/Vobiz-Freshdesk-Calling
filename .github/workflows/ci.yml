@@ -62,6 +62,13 @@ jobs:
       - name: fdk validate
         run: fdk validate
 
+      # fdk validate reports lint errors in app/scripts but still exits 0, so a
+      # tree that validates can still refuse to pack. Packing is the real gate.
+      - run: npm ci
+
+      - name: Pack the installable zip
+        run: npm run pack
+
   hygiene:
     name: No secrets or real identifiers
     runs-on: ubuntu-latest
