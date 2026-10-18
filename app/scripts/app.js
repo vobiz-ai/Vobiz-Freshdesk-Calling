@@ -36,7 +36,7 @@ let sipRegistered = false;
  * suppresses it. It is inert against any other host, so it costs nothing once
  * the backend is on a real domain.
  */
-async function backendFetch(url, options = {}) {
+function backendFetch(url, options = {}) {
   return fetch(url, {
     ...options,
     headers: { "ngrok-skip-browser-warning": "1", ...(options.headers || {}) },
@@ -509,10 +509,10 @@ async function initVobizSip() {
   }
 }
 
-async function onTriggerDialer(event) {
+function onTriggerDialer(event) {
   client.interface.trigger("show", { id: "softphone" });
   const data = event.helper.getData();
-  await placeCall(data && data.number);
+  placeCall(data && data.number);
 }
 
 function onDialButtonClick() {
@@ -542,7 +542,7 @@ function onDialButtonClick() {
  * and the backend replies with <Dial><Number> to reach the customer — the same
  * shape Vobiz's own rtc-demo and WebRTC playground use.
  */
-async function placeCall(number) {
+function placeCall(number) {
   if (!number) return;
 
   const numEl = document.getElementById("callnum");

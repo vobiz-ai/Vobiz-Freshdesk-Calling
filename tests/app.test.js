@@ -358,3 +358,50 @@ describe("leaving the page", () => {
     expect(t.ua.stopped).toBe(true);
   });
 });
+
+// These three settings are what make a call connect on Vobiz at all, and each
+// one fails with an error that points nowhere near the cause. They are pinned
+// here so a refactor cannot quietly drop one.
+describe("settings Vobiz requires of the SIP stack", () => {
+  async function registered() {
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({ "/agent/": AGENT_OK, "/session/": { body: { loggedIn: false } } }),
+    });
+    t.ua.emit("registered");
+    return t;
+  }
+
+  it("sends a User-Agent with no space in it", async () => {
+    // Vobiz interpolates the registration's User-Agent unescaped into the URI
+    // it routes <Dial><User> through. JsSIP's default, "JsSIP 3.10.1", has a
+    // space, and the platform then drops its own INVITE to this browser.
+    const t = await registered();
+    expect(t.ua.config.user_agent).toBeTruthy();
+    expect(t.ua.config.user_agent).not.toMatch(/\s/);
+  });
+
+  it("turns session timers off", async () => {
+    // Otherwise: 422 Session Interval Too Small, surfaced as "SIP Failure Code",
+    // and no CDR at all.
+    const t = await registered();
+    expect(t.ua.config.session_timers).toBe(false);
+  });
+
+  it("offers STUN on an outbound call", async () => {
+    const t = await registered();
+    t.fire("cti.triggerDialer", { helper: { getData: () => ({ number: "+911140848108" }) } });
+    await flush();
+    const { options } = t.ua.calls.at(-1);
+    expect(options.pcConfig.iceServers[0].urls[0]).toMatch(/^stun:/);
+  });
+
+  it("offers STUN when answering an inbound leg", async () => {
+    const t = await registered();
+    const session = new FakeSession();
+    let answeredWith = null;
+    session.answer = opts => { answeredWith = opts; };
+    t.ua.emit("newRTCSession", { originator: "remote", session });
+    expect(answeredWith.pcConfig.iceServers[0].urls[0]).toMatch(/^stun:/);
+  });
+});
