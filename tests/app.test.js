@@ -405,3 +405,75 @@ describe("settings Vobiz requires of the SIP stack", () => {
     expect(answeredWith.pcConfig.iceServers[0].urls[0]).toMatch(/^stun:/);
   });
 });
+
+// The backend serves the SIP identity only to a signed-in panel, so a fresh
+// open sees 401 from /agent and comes online after sign-in.
+describe("the session token", () => {
+  const SIGNED_OUT = { ok: false, status: 401, body: { error: "Sign in first" } };
+
+  function signedOutThenIn() {
+    let signedIn = false;
+    return routes({
+      "/agent/": () => (signedIn ? AGENT_OK : SIGNED_OUT),
+      "/session/": { body: { loggedIn: false } },
+      "/login": () => { signedIn = true; return { body: { token: "tok123", numbers: ["+911140848108"], selected: "+911140848108" } }; },
+      "/recordings/": { body: { objects: [] } },
+    });
+  }
+
+  async function signIn(t) {
+    t.el("vobiz-auth-id").value = "MA_TEST";
+    t.el("vobiz-auth-token").value = "token";
+    t.el("vobiz-login-btn").click();
+    await flush(16);
+  }
+
+  it("says to sign in, rather than reporting a broken identity, before sign-in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: signedOutThenIn() });
+    expect(t.text("status-message")).toMatch(/sign in below/i);
+    expect(t.text("status")).toBe("Signed out");
+    expect(t.JsSIP.UA).not.toHaveBeenCalled();
+  });
+
+  it("registers once signed in", async () => {
+    const t = await boot({ iparams: SETTINGS, fetch: signedOutThenIn() });
+    await signIn(t);
+    expect(t.JsSIP.UA).toHaveBeenCalledTimes(1);
+    expect(t.ua.config.password).toBe("s3cret");
+  });
+
+  it("sends the token as a bearer header on every later request", async () => {
+    const fetch = signedOutThenIn();
+    const t = await boot({ iparams: SETTINGS, fetch });
+    await signIn(t);
+    const after = fetch.mock.calls.filter(c => /\/agent\/|\/recordings\//.test(String(c[0])));
+    expect(after.length).toBeGreaterThan(0);
+    const last = after.at(-1);
+    expect(last[1].headers.Authorization).toBe("Bearer tok123");
+  });
+
+  it("keeps the token out of browser storage", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const t = await boot({ iparams: SETTINGS, fetch: signedOutThenIn() });
+    await signIn(t);
+    expect(setItem).not.toHaveBeenCalled();
+    expect(document.cookie).toBe("");
+    setItem.mockRestore();
+  });
+
+  it("plays the signed link the backend returned, without the token in it", async () => {
+    const t = await boot({
+      iparams: SETTINGS,
+      fetch: routes({
+        "/agent/": AGENT_OK,
+        "/session/": { body: { loggedIn: true, numbers: ["+911140848108"], from: "+911140848108", authId: "MA_TEST" } },
+        "/recordings/": { body: { objects: [{ recording_id: "rec_a", playUrl: "/recording-audio/priya/rec_a?exp=9&sig=abc" }] } },
+      }),
+    });
+    await flush();
+    const audio = t.el("vobiz-playback-audio");
+    audio.play = vi.fn(() => Promise.resolve());
+    t.el("call-history-list").querySelector("button").click();
+    expect(audio.src).toBe("https://backend.example.com/recording-audio/priya/rec_a?exp=9&sig=abc");
+  });
+});

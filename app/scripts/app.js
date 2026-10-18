@@ -27,6 +27,11 @@ let currentRTCSession = null;
 let accountReady = false;
 let sipRegistered = false;
 
+// The bearer token /login returns. Held in memory only — never localStorage,
+// never a cookie, never a URL — so it dies with the tab. The backend serves
+// the SIP identity and everything else only to a request carrying it.
+let sessionToken = null;
+
 /**
  * Every backend call goes through here.
  *
@@ -37,9 +42,10 @@ let sipRegistered = false;
  * the backend is on a real domain.
  */
 function backendFetch(url, options = {}) {
+  const auth = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
   return fetch(url, {
     ...options,
-    headers: { "ngrok-skip-browser-warning": "1", ...(options.headers || {}) },
+    headers: { "ngrok-skip-browser-warning": "1", ...auth, ...(options.headers || {}) },
   });
 }
 
@@ -86,12 +92,11 @@ async function init() {
   restoreVobizSession();
 }
 
-/** === Vobiz account login (Auth ID / Auth Token) ===
- * Separate from initVobizSip() above: that's the SIP identity used for a
- * future real agent bridge. This is which Vobiz *account* places the call —
- * whose number it goes out on, whose balance it bills to. Without logging
- * in here, /start-call is rejected by the backend; there is no more shared
- * fallback account.
+/** === Vobiz account sign-in (Auth ID / Auth Token) ===
+ * The backend checks these against the account it serves and returns a
+ * session token. That token is what unlocks the SIP identity the panel
+ * registers with (initVobizSip), the caller-ID choice, inbound setup and
+ * recordings. The Auth Token itself is sent once, here, and never kept.
  */
 function setLoginStatus(text) {
   const el = document.getElementById("vobiz-login-status");
@@ -187,6 +192,7 @@ async function vobizLogin() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `login failed (${res.status})`);
+    sessionToken = data.token || null;
     renderNumberOptions(data.numbers, data.selected);
     setLoginStatus(
       (data.numbers || []).length
@@ -195,6 +201,9 @@ async function vobizLogin() {
     );
     setDialEnabled(Boolean(data.selected));
     if (data.selected) loadCallHistory();
+    // The backend hands out the SIP identity only to a signed-in panel, so
+    // this is the first moment registration can succeed.
+    if (!vobizUA) initVobizSip();
   } catch (err) {
     console.error("[Vobiz] Login failed:", err);
     setLoginStatus(`Login failed: ${err.message}`);
@@ -302,17 +311,21 @@ function renderCallHistory(recordings) {
     const playBtn = document.createElement("button");
     playBtn.className = "secondary-btn play-btn";
     playBtn.textContent = "▶ Play";
-    playBtn.addEventListener("click", () => playRecording(rec.recording_id));
+    playBtn.addEventListener("click", () => playRecording(rec.recording_id, rec.playUrl));
 
     li.append(info, playBtn);
     listEl.appendChild(li);
   });
 }
 
-function playRecording(recordingId) {
+function playRecording(recordingId, playUrl) {
   const audioEl = document.getElementById("vobiz-playback-audio");
   if (!audioEl) return;
-  audioEl.src = `${BACKEND_URL}/recording-audio/${encodeURIComponent(AGENT_ID)}/${encodeURIComponent(recordingId)}`;
+  // An <audio> element cannot send the session token, so the backend signs
+  // each link with a short expiry instead. Use the link it gave us.
+  audioEl.src = playUrl
+    ? (/^https?:\/\//i.test(playUrl) ? playUrl : `${BACKEND_URL}${playUrl}`)
+    : `${BACKEND_URL}/recording-audio/${encodeURIComponent(AGENT_ID)}/${encodeURIComponent(recordingId)}`;
   // The element is hidden until there is something to play; an empty native
   // player renders as a bright browser-chrome blob.
   audioEl.hidden = false;
@@ -335,6 +348,7 @@ function statusState(text) {
   if (/^call ringing/i.test(text)) return { label: "Ringing", tone: "busy" };
   if (/^connecting/i.test(text)) return { label: "Connecting", tone: "pending" };
   if (/reconnecting/i.test(text)) return { label: "Reconnecting", tone: "pending" };
+  if (/^sign in/i.test(text)) return { label: "Signed out", tone: "pending" };
   if (/^not configured|must start with|cannot reach|could not load|registration failed/i.test(text)) {
     return { label: "Offline", tone: "error" };
   }
@@ -385,6 +399,12 @@ async function initVobizSip() {
   let agent;
   try {
     const res = await backendFetch(`${BACKEND_URL}/agent/${encodeURIComponent(AGENT_ID)}`);
+    if (res.status === 401) {
+      // Expected on every fresh open: the line comes online after sign-in.
+      setStatus("Sign in below to bring your phone line online.");
+      setSipRegistered(false);
+      return;
+    }
     if (!res.ok) {
       setStatus(`Could not load the identity "${AGENT_ID}" — check this app's settings.`);
       setSipRegistered(false);
@@ -449,8 +469,8 @@ async function initVobizSip() {
     setSipRegistered(false);
   });
 
-  // Vobiz dialing INTO this registered endpoint — the agent leg of a call
-  // our backend originated via the REST API (outbound bridge).
+  // Vobiz dialling INTO this registered endpoint: an inbound PSTN call that
+  // the backend's answer URL bridged here with <Dial><User>.
   vobizUA.on("newRTCSession", data => {
     if (data.originator !== "remote") return;
 
@@ -524,23 +544,15 @@ function onDialButtonClick() {
 /**
  * Place an outbound call with this browser as the A leg.
  *
- * The obvious design — and what docs/backend-contract.md describes — is to have
- * the backend originate to the customer over the REST API and then bridge this
- * browser in with <Dial><User>. That path is dead: routing *into* a registered
- * WebRTC endpoint is broken platform-side. Vobiz builds an unparseable gateway
- * URI for the B leg and drops its own INVITE:
+ * The INVITE goes from here. Vobiz then fetches the answer URL of the
+ * application this endpoint is bound to, and the backend reaches the customer
+ * from there — by default by putting this leg in a conference room and dialling
+ * the customer into it (see docs/architecture.md).
  *
- *   ERROR: tr_eval_uri(): invalid uri [user@…-webrtc-3.vobiz.ai:7032;…]
- *   INVITE|blocking gw: …
- *
- * 510 of those in 14 days, across other accounts and Vobiz's own SDK. The caller
- * hears ringback and nothing else, and the dial result reads ring=true with an
- * empty DialBLegUUID.
- *
- * Dialling *out* of a registered endpoint works fine, so this sends the INVITE
- * from here instead. Vobiz then fetches the endpoint application's answer URL,
- * and the backend replies with <Dial><Number> to reach the customer — the same
- * shape Vobiz's own rtc-demo and WebRTC playground use.
+ * The reverse — the backend dials the customer over the REST API, then rings
+ * this browser with <Dial><User> — is not used: the REST API cannot originate
+ * to a WebRTC endpoint, and the customer would hear ringback while the agent
+ * is being found.
  */
 function placeCall(number) {
   if (!number) return;
