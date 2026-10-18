@@ -130,7 +130,7 @@ describe("sign-in", () => {
   });
 
   it("refuses a different account's Auth ID", async () => {
-    const res = await post("/login", { agentId: "priya", authId: "MA_OTHER000", authToken: AUTH_TOKEN });
+    const res = await post("/login", { agentId: "priya", authId: "MA_other", authToken: AUTH_TOKEN });
     expect(res.status).toBe(401);
   });
 
